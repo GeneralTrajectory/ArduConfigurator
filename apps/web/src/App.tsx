@@ -33,6 +33,8 @@ import {
   type ParameterDraftEntry,
   type ParameterDraftStatus,
   type ParameterState,
+  type RcAxisId,
+  type RcAxisObservation,
   type RcRangeExerciseState,
   type ServoOutputKind,
 } from '@arduconfig/ardupilot-core'
@@ -88,6 +90,52 @@ interface ModeSwitchExerciseState {
   failureReason?: string
 }
 
+type OrientationExerciseStatus = 'idle' | 'running' | 'passed' | 'failed'
+type OrientationExerciseStepId = 'level' | 'pitch-forward' | 'roll-right'
+type RcCalibrationStatus = 'idle' | 'capturing' | 'ready' | 'failed'
+type MotorVerificationStatus = 'idle' | 'running' | 'passed' | 'failed'
+
+interface OrientationExerciseState {
+  status: OrientationExerciseStatus
+  targetSteps: OrientationExerciseStepId[]
+  completedSteps: OrientationExerciseStepId[]
+  currentTargetStep?: OrientationExerciseStepId
+  startedAtMs?: number
+  completedAtMs?: number
+  failureReason?: string
+}
+
+interface RcCalibrationAxisCapture {
+  axisId: RcAxisId
+  label: string
+  channelNumber: number
+  observedMin?: number
+  observedMax?: number
+  trimPwm?: number
+  lowObserved: boolean
+  highObserved: boolean
+  centeredObserved: boolean
+}
+
+interface RcCalibrationSessionState {
+  status: RcCalibrationStatus
+  captures: Record<RcAxisId, RcCalibrationAxisCapture>
+  startedAtMs?: number
+  completedAtMs?: number
+  failureReason?: string
+}
+
+interface MotorVerificationState {
+  status: MotorVerificationStatus
+  targetOutputs: number[]
+  verifiedOutputs: number[]
+  currentOutputChannel?: number
+  currentMotorNumber?: number
+  startedAtMs?: number
+  completedAtMs?: number
+  failureReason?: string
+}
+
 interface ParameterNotice {
   tone: StatusTone
   text: string
@@ -95,8 +143,284 @@ interface ParameterNotice {
 
 interface ParameterFollowUp {
   requiresReboot: boolean
+  refreshRequired: boolean
   changedCount: number
   text: string
+}
+
+interface SetupFlowCriterion {
+  label: string
+  met: boolean
+}
+
+type SetupFlowSequenceState = 'locked' | 'current' | 'complete'
+
+interface SetupConfirmationRecord {
+  signature: string
+  confirmedAtMs: number
+}
+
+interface SetupFlowActionDescriptor {
+  kind: 'guided' | 'scroll' | 'mode-switch-exercise' | 'rc-range-exercise' | 'confirm-step' | 'clear-confirmation'
+  label: string
+  tone?: 'primary' | 'secondary'
+  disabled?: boolean
+  actionId?: keyof typeof actionLabels
+  panelId?: string
+  sectionId?: string
+}
+
+interface SetupFlowSectionDescriptor {
+  id: string
+  title: string
+  status: 'attention' | 'in-progress' | 'complete'
+  sequenceState: SetupFlowSequenceState
+  summary: string
+  detail: string
+  evidence: string[]
+  criteria: SetupFlowCriterion[]
+  criteriaMetCount: number
+  panelId: string
+  panelLabel: string
+  actions: SetupFlowActionDescriptor[]
+  blockingReason?: string
+}
+
+interface SetupFlowFollowUpDescriptor {
+  title: string
+  tone: StatusTone
+  text: string
+  actions: SetupFlowActionDescriptor[]
+}
+
+const ORIENTATION_EXERCISE_ORDER: OrientationExerciseStepId[] = ['level', 'pitch-forward', 'roll-right']
+const ORIENTATION_LABELS: Record<number, string> = {
+  0: 'No rotation',
+  2: 'Yaw 90',
+  4: 'Yaw 180',
+  6: 'Yaw 270',
+  8: 'Roll 180',
+  24: 'Pitch 90',
+  25: 'Pitch 270',
+  100: 'Custom 1',
+  101: 'Custom 2'
+}
+const RC_CALIBRATION_AXIS_ORDER: RcAxisId[] = ['roll', 'pitch', 'throttle', 'yaw']
+
+function formatConfirmationTime(confirmedAtMs: number | undefined): string {
+  if (confirmedAtMs === undefined) {
+    return 'Not confirmed'
+  }
+
+  return new Date(confirmedAtMs).toLocaleTimeString([], {
+    hour: 'numeric',
+    minute: '2-digit'
+  })
+}
+
+function formatOrientationLabel(value: number | undefined): string {
+  if (value === undefined) {
+    return 'Unknown orientation'
+  }
+
+  return ORIENTATION_LABELS[value] ?? `Orientation ${value}`
+}
+
+function formatDegrees(value: number | undefined): string {
+  return value === undefined ? 'Unknown' : `${value.toFixed(1)}°`
+}
+
+function extractPreArmIssues(statusTexts: ConfiguratorSnapshot['statusTexts']): string[] {
+  const issues: string[] = []
+  statusTexts.forEach((entry) => {
+    const normalized = entry.text.trim()
+    if (!/prearm/i.test(normalized)) {
+      return
+    }
+    if (!issues.includes(normalized)) {
+      issues.push(normalized)
+    }
+  })
+  return issues
+}
+
+function createIdleOrientationExerciseState(): OrientationExerciseState {
+  return {
+    status: 'idle',
+    targetSteps: [],
+    completedSteps: []
+  }
+}
+
+function createOrientationExerciseState(snapshot: ConfiguratorSnapshot): OrientationExerciseState {
+  if (!snapshot.liveVerification.attitudeTelemetry.verified) {
+    return failOrientationExerciseState(createIdleOrientationExerciseState(), 'Live attitude telemetry is not available yet.')
+  }
+
+  return {
+    status: 'running',
+    targetSteps: ORIENTATION_EXERCISE_ORDER,
+    completedSteps: [],
+    currentTargetStep: ORIENTATION_EXERCISE_ORDER[0],
+    startedAtMs: Date.now()
+  }
+}
+
+function advanceOrientationExerciseState(
+  current: OrientationExerciseState,
+  snapshot: ConfiguratorSnapshot
+): OrientationExerciseState {
+  if (current.status !== 'running') {
+    return current
+  }
+
+  if (!snapshot.liveVerification.attitudeTelemetry.verified) {
+    return failOrientationExerciseState(current, 'Lost live attitude telemetry before the orientation exercise completed.')
+  }
+
+  const currentTargetStep = current.currentTargetStep
+  if (!currentTargetStep) {
+    return current
+  }
+
+  if (!orientationStepSatisfied(currentTargetStep, snapshot)) {
+    return current
+  }
+
+  const completedSteps = [...current.completedSteps, currentTargetStep]
+  const nextStep = current.targetSteps.find((step) => !completedSteps.includes(step))
+
+  if (!nextStep) {
+    return {
+      ...current,
+      status: 'passed',
+      completedSteps,
+      currentTargetStep: undefined,
+      completedAtMs: Date.now(),
+      failureReason: undefined
+    }
+  }
+
+  return {
+    ...current,
+    completedSteps,
+    currentTargetStep: nextStep
+  }
+}
+
+function failOrientationExerciseState(current: OrientationExerciseState, reason: string): OrientationExerciseState {
+  return {
+    ...current,
+    status: 'failed',
+    failureReason: reason,
+    completedAtMs: Date.now()
+  }
+}
+
+function orientationStepLabel(step: OrientationExerciseStepId): string {
+  switch (step) {
+    case 'level':
+      return 'Level'
+    case 'pitch-forward':
+      return 'Pitch forward'
+    case 'roll-right':
+      return 'Roll right'
+    default:
+      return step
+  }
+}
+
+function orientationStepInstruction(step: OrientationExerciseStepId | undefined): string {
+  switch (step) {
+    case 'level':
+      return 'Hold the vehicle level and motionless until both roll and pitch are near zero.'
+    case 'pitch-forward':
+      return 'Tilt the nose forward. Pitch should move negative if board orientation is correct.'
+    case 'roll-right':
+      return 'Roll the vehicle to the right. Roll should move positive if board orientation is correct.'
+    default:
+      return 'Start the orientation exercise to verify live horizon behavior.'
+  }
+}
+
+function orientationStepSatisfied(step: OrientationExerciseStepId, snapshot: ConfiguratorSnapshot): boolean {
+  const rollDeg = snapshot.liveVerification.attitudeTelemetry.rollDeg
+  const pitchDeg = snapshot.liveVerification.attitudeTelemetry.pitchDeg
+  if (rollDeg === undefined || pitchDeg === undefined) {
+    return false
+  }
+
+  switch (step) {
+    case 'level':
+      return Math.abs(rollDeg) <= 8 && Math.abs(pitchDeg) <= 8
+    case 'pitch-forward':
+      return pitchDeg <= -12
+    case 'roll-right':
+      return rollDeg >= 12
+    default:
+      return false
+  }
+}
+
+function createIdleMotorVerificationState(): MotorVerificationState {
+  return {
+    status: 'idle',
+    targetOutputs: [],
+    verifiedOutputs: []
+  }
+}
+
+function createIdleRcCalibrationSessionState(observations: RcAxisObservation[] = []): RcCalibrationSessionState {
+  const observationMap = new Map(observations.map((observation) => [observation.axisId, observation]))
+  return {
+    status: 'idle',
+    captures: Object.fromEntries(
+      RC_CALIBRATION_AXIS_ORDER.map((axisId) => {
+        const observation = observationMap.get(axisId)
+        return [
+          axisId,
+          {
+            axisId,
+            label: observation?.label ?? formatRcAxisLabel(axisId),
+            channelNumber: observation?.channelNumber ?? 0,
+            observedMin: observation?.pwm,
+            observedMax: observation?.pwm,
+            trimPwm: axisId === 'throttle' ? undefined : observation?.pwm,
+            lowObserved: observation?.lowDetected ?? false,
+            highObserved: observation?.highDetected ?? false,
+            centeredObserved: axisId === 'throttle' ? false : observation?.centeredDetected ?? false
+          }
+        ]
+      })
+    ) as Record<RcAxisId, RcCalibrationAxisCapture>
+  }
+}
+
+function rcCalibrationCaptureComplete(capture: RcCalibrationAxisCapture): boolean {
+  return capture.axisId === 'throttle'
+    ? capture.lowObserved && capture.highObserved
+    : capture.lowObserved && capture.highObserved && capture.centeredObserved && capture.trimPwm !== undefined
+}
+
+function panelAnchorForSetupSection(sectionId: string): { panelId: string; panelLabel: string } {
+  switch (sectionId) {
+    case 'link':
+      return { panelId: 'setup-panel-link', panelLabel: 'Connection' }
+    case 'airframe':
+    case 'outputs':
+      return { panelId: 'setup-panel-outputs', panelLabel: 'Airframe & Outputs' }
+    case 'accelerometer':
+    case 'compass':
+      return { panelId: 'setup-panel-guided', panelLabel: 'Guided Setup' }
+    case 'radio':
+    case 'modes':
+      return { panelId: 'setup-panel-rc', panelLabel: 'Live RC Inputs' }
+    case 'failsafe':
+    case 'power':
+      return { panelId: 'setup-panel-power', panelLabel: 'Power & Failsafe' }
+    default:
+      return { panelId: 'setup-panel-guided', panelLabel: 'Guided Setup' }
+  }
 }
 
 function createRuntime(mode: TransportMode): ArduPilotConfiguratorRuntime {
@@ -142,6 +466,30 @@ function toneForSetup(kind: 'attention' | 'in-progress' | 'complete'): 'warning'
     default:
       return 'warning'
   }
+}
+
+function toneForSetupSequence(state: SetupFlowSequenceState): StatusTone {
+  switch (state) {
+    case 'complete':
+      return 'success'
+    case 'current':
+      return 'warning'
+    default:
+      return 'neutral'
+  }
+}
+
+function deriveSetupStatusFromCriteria(criteria: SetupFlowCriterion[]): 'attention' | 'in-progress' | 'complete' {
+  if (criteria.length === 0) {
+    return 'attention'
+  }
+
+  const criteriaMetCount = criteria.filter((criterion) => criterion.met).length
+  if (criteriaMetCount === criteria.length) {
+    return 'complete'
+  }
+
+  return criteriaMetCount === 0 ? 'attention' : 'in-progress'
 }
 
 function toneForGuidedAction(
@@ -545,14 +893,19 @@ export function App() {
   const [parameterNotice, setParameterNotice] = useState<ParameterNotice>()
   const [parameterFollowUp, setParameterFollowUp] = useState<ParameterFollowUp>()
   const [busyAction, setBusyAction] = useState<string>()
+  const [orientationExercise, setOrientationExercise] = useState<OrientationExerciseState>(createIdleOrientationExerciseState)
   const [modeSwitchActivity, setModeSwitchActivity] = useState<ModeSwitchActivity>()
   const [modeSwitchExercise, setModeSwitchExercise] = useState<ModeSwitchExerciseState>(createIdleModeSwitchExerciseState)
   const [rcRangeExercise, setRcRangeExercise] = useState<RcRangeExerciseState>(createIdleRcRangeExerciseState)
+  const [rcCalibrationSession, setRcCalibrationSession] = useState<RcCalibrationSessionState>(createIdleRcCalibrationSessionState)
   const [motorTestOutput, setMotorTestOutput] = useState<number>()
   const [motorTestThrottlePercent, setMotorTestThrottlePercent] = useState(7)
   const [motorTestDurationSeconds, setMotorTestDurationSeconds] = useState(1)
+  const [motorVerification, setMotorVerification] = useState<MotorVerificationState>(createIdleMotorVerificationState)
   const [propsRemovedAcknowledged, setPropsRemovedAcknowledged] = useState(false)
   const [testAreaAcknowledged, setTestAreaAcknowledged] = useState(false)
+  const [selectedSetupSectionId, setSelectedSetupSectionId] = useState<string>()
+  const [setupConfirmations, setSetupConfirmations] = useState<Record<string, SetupConfirmationRecord>>({})
   const parameterBackupInputRef = useRef<HTMLInputElement>(null)
   const previousModeSwitchRef = useRef<{ slot?: number; pwm?: number }>({})
   const webSerialSupported = WebSerialTransport.isSupported()
@@ -566,7 +919,9 @@ export function App() {
   const batteryMonitor = readRoundedParameter(snapshot, 'BATT_MONITOR')
   const batteryCapacity = readRoundedParameter(snapshot, 'BATT_CAPACITY')
   const batteryFailsafe = readRoundedParameter(snapshot, 'BATT_FS_LOW_ACT')
+  const boardOrientation = readRoundedParameter(snapshot, 'AHRS_ORIENTATION')
   const throttleFailsafe = readRoundedParameter(snapshot, 'FS_THR_ENABLE')
+  const activePreArmIssues = useMemo(() => extractPreArmIssues(snapshot.statusTexts), [snapshot.statusTexts])
   const configuredOutputs = [...outputMapping.motorOutputs, ...outputMapping.configuredAuxOutputs].sort(
     (left, right) => left.channelNumber - right.channelNumber
   )
@@ -594,6 +949,15 @@ export function App() {
     modeAssignments.length >= 2 &&
     modeSwitchEstimate.channelNumber !== undefined
   const canRunRcRangeExercise = snapshot.connection.kind === 'connected' && snapshot.liveVerification.rcInput.verified
+  const canRunOrientationExercise = snapshot.connection.kind === 'connected' && snapshot.liveVerification.attitudeTelemetry.verified
+  const canCaptureRcCalibration = snapshot.connection.kind === 'connected' && snapshot.liveVerification.rcInput.verified
+  const canRunMotorVerification =
+    snapshot.connection.kind === 'connected' &&
+    snapshot.parameterStats.status === 'complete' &&
+    snapshot.vehicle !== undefined &&
+    !snapshot.vehicle.armed &&
+    snapshot.sessionProfile === 'full-power' &&
+    outputMapping.motorOutputs.length > 0
   const canApplyDraftParameters = canApplyParameterChanges(snapshot)
 
   useEffect(() => {
@@ -606,6 +970,12 @@ export function App() {
   }, [runtime])
 
   useEffect(() => {
+    setParameterNotice(undefined)
+    setParameterFollowUp(undefined)
+    setSetupConfirmations({})
+  }, [runtime])
+
+  useEffect(() => {
     runtime.setSessionProfile(sessionProfile)
   }, [runtime, sessionProfile])
 
@@ -613,12 +983,14 @@ export function App() {
     if (snapshot.connection.kind !== 'connected') {
       previousModeSwitchRef.current = {}
       setModeSwitchActivity(undefined)
+      setOrientationExercise(createIdleOrientationExerciseState())
       setModeSwitchExercise(createIdleModeSwitchExerciseState())
       setRcRangeExercise(createIdleRcRangeExerciseState())
+      setRcCalibrationSession(createIdleRcCalibrationSessionState())
+      setMotorVerification(createIdleMotorVerificationState())
       setPropsRemovedAcknowledged(false)
       setTestAreaAcknowledged(false)
       setParameterNotice(undefined)
-      setParameterFollowUp(undefined)
       return
     }
 
@@ -670,12 +1042,88 @@ export function App() {
   }, [modeSwitchExercise.status, snapshot])
 
   useEffect(() => {
+    if (orientationExercise.status !== 'running') {
+      return
+    }
+
+    setOrientationExercise((current) => advanceOrientationExerciseState(current, snapshot))
+  }, [orientationExercise.status, snapshot])
+
+  useEffect(() => {
     if (rcRangeExercise.status !== 'running') {
       return
     }
 
     setRcRangeExercise((current) => advanceRcRangeExerciseState(current, snapshot))
   }, [rcRangeExercise.status, snapshot])
+
+  useEffect(() => {
+    if (rcCalibrationSession.status !== 'capturing') {
+      return
+    }
+
+    setRcCalibrationSession((current) => {
+      if (current.status !== 'capturing') {
+        return current
+      }
+
+      let changed = false
+      const nextCaptures = { ...current.captures }
+
+      rcAxisObservations.forEach((observation) => {
+        const existing = nextCaptures[observation.axisId]
+        if (!existing) {
+          return
+        }
+
+        const pwm = observation.pwm
+        const nextCapture: RcCalibrationAxisCapture = {
+          ...existing,
+          channelNumber: observation.channelNumber,
+          observedMin: pwm !== undefined ? Math.min(existing.observedMin ?? pwm, pwm) : existing.observedMin,
+          observedMax: pwm !== undefined ? Math.max(existing.observedMax ?? pwm, pwm) : existing.observedMax,
+          trimPwm:
+            observation.axisId === 'throttle'
+              ? undefined
+              : observation.centeredDetected
+                ? observation.pwm
+                : existing.trimPwm ?? observation.pwm,
+          lowObserved: existing.lowObserved || observation.lowDetected,
+          highObserved: existing.highObserved || observation.highDetected,
+          centeredObserved:
+            observation.axisId === 'throttle'
+              ? false
+              : existing.centeredObserved || observation.centeredDetected || existing.trimPwm !== undefined
+        }
+
+        if (
+          nextCapture.channelNumber !== existing.channelNumber ||
+          nextCapture.observedMin !== existing.observedMin ||
+          nextCapture.observedMax !== existing.observedMax ||
+          nextCapture.trimPwm !== existing.trimPwm ||
+          nextCapture.lowObserved !== existing.lowObserved ||
+          nextCapture.highObserved !== existing.highObserved ||
+          nextCapture.centeredObserved !== existing.centeredObserved
+        ) {
+          nextCaptures[observation.axisId] = nextCapture
+          changed = true
+        }
+      })
+
+      const completed = RC_CALIBRATION_AXIS_ORDER.every((axisId) => rcCalibrationCaptureComplete(nextCaptures[axisId]))
+      if (completed) {
+        return {
+          ...current,
+          status: 'ready',
+          captures: nextCaptures,
+          completedAtMs: Date.now(),
+          failureReason: undefined
+        }
+      }
+
+      return changed ? { ...current, captures: nextCaptures } : current
+    })
+  }, [rcAxisObservations, rcCalibrationSession.status])
 
   const filteredParameters = snapshot.parameters.filter((parameter) => {
     const query = parameterSearch.trim().toLowerCase()
@@ -763,9 +1211,32 @@ export function App() {
     setBusyAction(actionId)
     try {
       await runtime.runGuidedAction(actionId)
+      if (actionId === 'reboot-autopilot') {
+        setParameterFollowUp((current) =>
+          current?.requiresReboot
+            ? {
+                ...current,
+                requiresReboot: false,
+                refreshRequired: true,
+                text: 'Reboot requested. Reconnect if needed, then pull parameters again before continuing guided setup.'
+              }
+            : current
+        )
+      }
+      if (actionId === 'request-parameters') {
+        await runtime.waitForParameterSync()
+        setParameterFollowUp((current) => (current?.refreshRequired ? undefined : current))
+      }
     } finally {
       setBusyAction(undefined)
     }
+  }
+
+  function scrollToPanel(panelId: string): void {
+    document.getElementById(panelId)?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start'
+    })
   }
 
   function handleDiscardParameterDraft(paramId: string): void {
@@ -805,6 +1276,7 @@ export function App() {
       })
       setParameterFollowUp({
         requiresReboot,
+        refreshRequired: true,
         changedCount: 1,
         text: requiresReboot
           ? 'This applied change is marked as reboot-required. Request a reboot, then pull parameters again before continuing guided setup.'
@@ -847,6 +1319,7 @@ export function App() {
       })
       setParameterFollowUp({
         requiresReboot: applyingRebootRequiredCount > 0,
+        refreshRequired: true,
         changedCount: result.applied.length,
         text:
           applyingRebootRequiredCount > 0
@@ -974,6 +1447,149 @@ export function App() {
     )
   }
 
+  function handleStartOrientationExercise(): void {
+    if (!canRunOrientationExercise) {
+      return
+    }
+
+    setOrientationExercise(createOrientationExerciseState(snapshot))
+  }
+
+  function handleResetOrientationExercise(): void {
+    setOrientationExercise(createIdleOrientationExerciseState())
+  }
+
+  function handleFailOrientationExercise(): void {
+    setOrientationExercise((current) =>
+      current.status === 'running'
+        ? failOrientationExerciseState(
+            current,
+            `Did not observe the expected ${orientationStepLabel(current.currentTargetStep ?? 'level')} horizon response.`
+          )
+        : current
+    )
+  }
+
+  function handleStartRcCalibrationCapture(): void {
+    if (!canCaptureRcCalibration) {
+      return
+    }
+
+    setRcCalibrationSession({
+      ...createIdleRcCalibrationSessionState(rcAxisObservations),
+      status: 'capturing',
+      startedAtMs: Date.now(),
+      completedAtMs: undefined,
+      failureReason: undefined
+    })
+    clearSetupSectionConfirmation('radio')
+  }
+
+  function handleResetRcCalibrationCapture(): void {
+    setRcCalibrationSession(createIdleRcCalibrationSessionState(rcAxisObservations))
+  }
+
+  function handleStageRcCalibrationDrafts(): void {
+    if (rcCalibrationSession.status !== 'ready') {
+      return
+    }
+
+    const nextDrafts: Record<string, string> = {}
+    RC_CALIBRATION_AXIS_ORDER.forEach((axisId) => {
+      const capture = rcCalibrationSession.captures[axisId]
+      if (capture.observedMin !== undefined) {
+        nextDrafts[`RC${capture.channelNumber}_MIN`] = String(Math.round(capture.observedMin))
+      }
+      if (capture.observedMax !== undefined) {
+        nextDrafts[`RC${capture.channelNumber}_MAX`] = String(Math.round(capture.observedMax))
+      }
+      if (axisId !== 'throttle' && capture.trimPwm !== undefined) {
+        nextDrafts[`RC${capture.channelNumber}_TRIM`] = String(Math.round(capture.trimPwm))
+      }
+    })
+
+    setEditedValues((current) => ({
+      ...current,
+      ...nextDrafts
+    }))
+    clearSetupSectionConfirmation('radio')
+    setSelectedParameterId(Object.keys(nextDrafts)[0] ?? selectedParameterId)
+    setParameterNotice({
+      tone: 'warning',
+      text: `Staged ${Object.keys(nextDrafts).length} RC calibration value(s) for review in the parameter editor.`
+    })
+  }
+
+  function handleStartMotorVerification(): void {
+    if (!canRunMotorVerification) {
+      return
+    }
+
+    const targetOutputs = outputMapping.motorOutputs.map((output) => output.channelNumber)
+    const firstOutput = outputMapping.motorOutputs[0]
+    setMotorVerification({
+      status: 'running',
+      targetOutputs,
+      verifiedOutputs: [],
+      currentOutputChannel: firstOutput?.channelNumber,
+      currentMotorNumber: firstOutput?.motorNumber,
+      startedAtMs: Date.now()
+    })
+    setMotorTestOutput(firstOutput?.channelNumber)
+    clearSetupSectionConfirmation('outputs')
+  }
+
+  function handleResetMotorVerification(): void {
+    setMotorVerification(createIdleMotorVerificationState())
+  }
+
+  function handleConfirmMotorVerification(): void {
+    setMotorVerification((current) => {
+      if (current.status !== 'running' || current.currentOutputChannel === undefined) {
+        return current
+      }
+
+      const verifiedOutputs = current.verifiedOutputs.includes(current.currentOutputChannel)
+        ? current.verifiedOutputs
+        : [...current.verifiedOutputs, current.currentOutputChannel]
+      const nextOutput = outputMapping.motorOutputs.find((output) => !verifiedOutputs.includes(output.channelNumber))
+
+      setMotorTestOutput(nextOutput?.channelNumber)
+
+      if (!nextOutput) {
+        return {
+          ...current,
+          status: 'passed',
+          verifiedOutputs,
+          currentOutputChannel: undefined,
+          currentMotorNumber: undefined,
+          completedAtMs: Date.now(),
+          failureReason: undefined
+        }
+      }
+
+      return {
+        ...current,
+        verifiedOutputs,
+        currentOutputChannel: nextOutput.channelNumber,
+        currentMotorNumber: nextOutput.motorNumber
+      }
+    })
+  }
+
+  function handleFailMotorVerification(): void {
+    setMotorVerification((current) =>
+      current.status === 'running'
+        ? {
+            ...current,
+            status: 'failed',
+            failureReason: `Motor verification failed on OUT${current.currentOutputChannel ?? '?'}. Check motor order, direction, and output mapping before flight.`,
+            completedAtMs: Date.now()
+          }
+        : current
+    )
+  }
+
   const modeSwitchExerciseSummary = (() => {
     if (modeSwitchExercise.status === 'passed') {
       return `Observed all configured switch positions on CH${modeSwitchEstimate.channelNumber ?? '?'}.`
@@ -1035,9 +1651,802 @@ export function App() {
         ]
       : rcRangeExercise.status === 'passed'
         ? ['All four primary control axes were exercised against live receiver input.']
-        : rcRangeExercise.status === 'failed'
+      : rcRangeExercise.status === 'failed'
           ? ['Check receiver mapping, stick endpoints, trims, and calibration values, then rerun the exercise.']
           : ['The app will watch each primary control axis and mark it complete after the expected movements are observed.']
+
+  const orientationExerciseSummary = (() => {
+    if (orientationExercise.status === 'passed') {
+      return 'Observed level, forward pitch, and right-roll horizon responses from the live attitude stream.'
+    }
+    if (orientationExercise.status === 'failed') {
+      return orientationExercise.failureReason ?? 'Orientation exercise failed.'
+    }
+    if (orientationExercise.status === 'running') {
+      return orientationStepInstruction(orientationExercise.currentTargetStep)
+    }
+    if (!snapshot.liveVerification.attitudeTelemetry.verified) {
+      return 'Waiting for live attitude telemetry before starting orientation verification.'
+    }
+    return 'Run the orientation exercise to confirm that the live horizon responds correctly to pitch and roll movement.'
+  })()
+
+  const orientationExerciseInstructions =
+    orientationExercise.status === 'running'
+      ? [
+          orientationStepInstruction(orientationExercise.currentTargetStep),
+          `Completed ${orientationExercise.completedSteps.length} of ${orientationExercise.targetSteps.length} orientation checks.`
+        ]
+      : orientationExercise.status === 'passed'
+        ? ['The live attitude stream matched the expected level, forward-pitch, and right-roll behavior.']
+        : orientationExercise.status === 'failed'
+          ? ['Check AHRS_ORIENTATION and board mounting, then rerun the orientation exercise.']
+          : ['The app will verify level, forward pitch, and right roll against the live ATTITUDE stream.']
+
+  const rcCalibrationSummary = (() => {
+    if (rcCalibrationSession.status === 'ready') {
+      return 'Observed full stick travel and ready-to-stage RC endpoint values.'
+    }
+    if (rcCalibrationSession.status === 'capturing') {
+      return 'Move each primary axis through its full range to capture new RC endpoints.'
+    }
+    if (rcCalibrationSession.status === 'failed') {
+      return rcCalibrationSession.failureReason ?? 'RC calibration capture failed.'
+    }
+    if (!snapshot.liveVerification.rcInput.verified) {
+      return 'Waiting for live RC telemetry before RC calibration capture can start.'
+    }
+    return 'Capture fresh RC endpoint values from live stick movement, then stage them in the parameter editor.'
+  })()
+
+  const motorVerificationSummary = (() => {
+    if (motorVerification.status === 'passed') {
+      return 'Every mapped motor output was stepped through and operator-confirmed.'
+    }
+    if (motorVerification.status === 'failed') {
+      return motorVerification.failureReason ?? 'Motor verification failed.'
+    }
+    if (motorVerification.status === 'running') {
+      return motorVerification.currentOutputChannel === undefined
+        ? 'Motor verification is awaiting the next output.'
+        : `Spin OUT${motorVerification.currentOutputChannel}${motorVerification.currentMotorNumber !== undefined ? ` / M${motorVerification.currentMotorNumber}` : ''}, then confirm the correct motor and direction.`
+    }
+    if (snapshot.sessionProfile === 'usb-bench') {
+      return 'Motor order and direction verification is deferred in USB bench sessions.'
+    }
+    return 'Use guarded single-output motor tests to verify motor order and direction before the first props-on flight.'
+  })()
+
+  const setupConfirmationSignatures = useMemo<Record<string, string>>(
+    () => ({
+      airframe: JSON.stringify({
+        frameClassValue: airframe.frameClassValue,
+        frameTypeValue: airframe.frameTypeValue,
+        frameTypeIgnored: airframe.frameTypeIgnored
+      }),
+      outputs: JSON.stringify({
+        expectedMotorCount: airframe.expectedMotorCount,
+        motorOutputs: outputMapping.motorOutputs.map((output) => ({
+          channelNumber: output.channelNumber,
+          functionValue: output.functionValue,
+          motorNumber: output.motorNumber
+        })),
+        auxOutputs: outputMapping.configuredAuxOutputs.map((output) => ({
+          channelNumber: output.channelNumber,
+          functionValue: output.functionValue
+        })),
+        notes: outputMapping.notes
+      }),
+      accelerometer: JSON.stringify({
+        status: snapshot.guidedActions['calibrate-accelerometer'].status,
+        completedAtMs: snapshot.guidedActions['calibrate-accelerometer'].completedAtMs
+      }),
+      compass: JSON.stringify({
+        status: snapshot.guidedActions['calibrate-compass'].status,
+        completedAtMs: snapshot.guidedActions['calibrate-compass'].completedAtMs
+      }),
+      radio: JSON.stringify({
+        mappings: rcAxisObservations.map((observation) => ({
+          axisId: observation.axisId,
+          channelNumber: observation.channelNumber
+        })),
+        params: rcAxisObservations.map((observation) => ({
+          channelNumber: observation.channelNumber,
+          minimum: readRoundedParameter(snapshot, `RC${observation.channelNumber}_MIN`),
+          maximum: readRoundedParameter(snapshot, `RC${observation.channelNumber}_MAX`),
+          trim: readRoundedParameter(snapshot, `RC${observation.channelNumber}_TRIM`)
+        }))
+      }),
+      failsafe: JSON.stringify({
+        throttleFailsafe,
+        batteryFailsafe,
+        rcVerified: snapshot.liveVerification.rcInput.verified,
+        batteryVerified: snapshot.liveVerification.batteryTelemetry.verified
+      }),
+      power: JSON.stringify({
+        batteryMonitor,
+        batteryCapacity,
+        batteryVerified: snapshot.liveVerification.batteryTelemetry.verified
+      })
+    }),
+    [
+      airframe.expectedMotorCount,
+      airframe.frameClassValue,
+      airframe.frameTypeIgnored,
+      airframe.frameTypeValue,
+      batteryCapacity,
+      batteryFailsafe,
+      batteryMonitor,
+      outputMapping.configuredAuxOutputs,
+      outputMapping.motorOutputs,
+      outputMapping.notes,
+      rcAxisObservations,
+      snapshot.guidedActions,
+      snapshot.liveVerification.batteryTelemetry.verified,
+      snapshot.liveVerification.rcInput.verified,
+      throttleFailsafe
+    ]
+  )
+
+  function getSetupConfirmationRecord(sectionId: string): SetupConfirmationRecord | undefined {
+    const record = setupConfirmations[sectionId]
+    const signature = setupConfirmationSignatures[sectionId]
+    if (!record || signature === undefined || record.signature !== signature) {
+      return undefined
+    }
+
+    return record
+  }
+
+  function confirmSetupSection(sectionId: string): void {
+    const signature = setupConfirmationSignatures[sectionId]
+    if (signature === undefined) {
+      return
+    }
+
+    setSetupConfirmations((current) => ({
+      ...current,
+      [sectionId]: {
+        signature,
+        confirmedAtMs: Date.now()
+      }
+    }))
+  }
+
+  function clearSetupSectionConfirmation(sectionId: string): void {
+    setSetupConfirmations((current) => {
+      if (!(sectionId in current)) {
+        return current
+      }
+
+      const next = { ...current }
+      delete next[sectionId]
+      return next
+    })
+  }
+
+  const setupFlowFollowUp = useMemo<SetupFlowFollowUpDescriptor | undefined>(() => {
+    if (!parameterFollowUp) {
+      return undefined
+    }
+
+    const actions: SetupFlowActionDescriptor[] = []
+    if (parameterFollowUp.requiresReboot) {
+      actions.push({
+        kind: 'guided',
+        label: guidedActionButtonLabel('reboot-autopilot', snapshot, busyAction),
+        tone: 'secondary',
+        actionId: 'reboot-autopilot',
+        disabled: busyAction !== undefined || !canRunGuidedAction(snapshot, 'reboot-autopilot')
+      })
+    } else if (parameterFollowUp.refreshRequired) {
+      actions.push({
+        kind: 'guided',
+        label: guidedActionButtonLabel('request-parameters', snapshot, busyAction),
+        tone: 'primary',
+        actionId: 'request-parameters',
+        disabled: busyAction !== undefined || !canRunGuidedAction(snapshot, 'request-parameters')
+      })
+    }
+
+    return {
+      title: parameterFollowUp.requiresReboot
+        ? 'Pending reboot before later setup steps unlock'
+        : 'Pending parameter refresh before later setup steps unlock',
+      tone: parameterFollowUp.requiresReboot ? 'warning' : 'neutral',
+      text: parameterFollowUp.text,
+      actions
+    }
+  }, [busyAction, parameterFollowUp, snapshot])
+
+  const setupFlowSections = useMemo<SetupFlowSectionDescriptor[]>(() => {
+    const airframeConfirmation = getSetupConfirmationRecord('airframe')
+    const outputsConfirmation = getSetupConfirmationRecord('outputs')
+    const accelerometerConfirmation = getSetupConfirmationRecord('accelerometer')
+    const compassConfirmation = getSetupConfirmationRecord('compass')
+    const radioConfirmation = getSetupConfirmationRecord('radio')
+    const failsafeConfirmation = getSetupConfirmationRecord('failsafe')
+    const powerConfirmation = getSetupConfirmationRecord('power')
+
+    const baseSections = snapshot.setupSections.map((section) => {
+      const panel = panelAnchorForSetupSection(section.id)
+      const actions: SetupFlowActionDescriptor[] = [
+        {
+          kind: 'scroll',
+          label: `Open ${panel.panelLabel}`,
+          panelId: panel.panelId
+        }
+      ]
+      let summary = section.description
+      let detail = section.notes[0] ?? `Use the ${panel.panelLabel} panel to continue this part of setup.`
+      let evidence: string[] = []
+      let criteria: SetupFlowCriterion[] = []
+
+      switch (section.id) {
+        case 'link':
+          criteria = [
+            {
+              label: 'Heartbeat and vehicle identity detected',
+              met: snapshot.connection.kind === 'connected' && snapshot.vehicle !== undefined
+            },
+            {
+              label: 'Initial parameter snapshot synced',
+              met: snapshot.parameterStats.status === 'complete'
+            },
+            {
+              label: 'No pending reboot or refresh follow-up',
+              met: !parameterFollowUp?.refreshRequired
+            }
+          ]
+          summary = parameterFollowUp
+            ? parameterFollowUp.requiresReboot
+              ? 'A reboot and fresh parameter pull are required before setup can continue.'
+              : 'Pull parameters again to confirm the controller state before moving on.'
+            : snapshot.connection.kind !== 'connected'
+              ? 'Connect to the vehicle and request the first parameter snapshot.'
+              : snapshot.parameterStats.status === 'complete'
+                ? `Initial sync complete at ${snapshot.parameterStats.downloaded}/${snapshot.parameterStats.total}.`
+                : formatParameterSync(snapshot)
+          detail = parameterFollowUp?.text
+            ?? (snapshot.connection.kind !== 'connected'
+              ? 'Use the Connection panel first, then pull parameters once heartbeat is visible.'
+              : 'Re-run parameter sync whenever you need a fresh snapshot before continuing guided setup.')
+          evidence = [
+            `Link: ${snapshot.connection.kind}`,
+            `Sync: ${formatParameterSync(snapshot)}`,
+            parameterFollowUp
+              ? `Follow-up: ${parameterFollowUp.requiresReboot ? 'reboot + refresh pending' : 'refresh pending'}`
+              : 'Follow-up: clear'
+          ]
+          actions.unshift({
+            kind: 'guided',
+            label: guidedActionButtonLabel('request-parameters', snapshot, busyAction),
+            tone: 'primary',
+            actionId: 'request-parameters',
+            disabled: busyAction !== undefined || !canRunGuidedAction(snapshot, 'request-parameters')
+          })
+          break
+        case 'airframe':
+          criteria = [
+            {
+              label: 'Frame class detected',
+              met: airframe.frameClassValue !== undefined
+            },
+            {
+              label: 'Frame type identified or intentionally ignored for this frame class',
+              met: airframe.frameTypeIgnored || airframe.frameTypeValue !== undefined
+            },
+            {
+              label: 'Board orientation parameter is present',
+              met: boardOrientation !== undefined
+            },
+            {
+              label: 'Live attitude telemetry is present',
+              met: snapshot.liveVerification.attitudeTelemetry.verified
+            },
+            {
+              label: 'Orientation exercise passed',
+              met: orientationExercise.status === 'passed'
+            },
+            {
+              label: 'Operator confirmed the detected frame geometry matches the build',
+              met: airframeConfirmation !== undefined
+            }
+          ]
+          summary = `${airframe.frameClassLabel} / ${airframe.frameTypeLabel}`
+          detail = 'Confirm the detected frame geometry, verify the live horizon behavior against the board orientation, then explicitly sign off before moving on to output review or motor testing.'
+          evidence = [
+            `Expected motors: ${airframe.expectedMotorCount ?? 'specialized frame'}`,
+            `Mapped motors: ${outputMapping.motorOutputs.length}`,
+            `Orientation: ${formatOrientationLabel(boardOrientation)}`,
+            `Review: ${airframeConfirmation ? `confirmed at ${formatConfirmationTime(airframeConfirmation.confirmedAtMs)}` : 'pending operator confirmation'}`
+          ]
+          actions.unshift({
+            kind: airframeConfirmation ? 'clear-confirmation' : 'confirm-step',
+            label: airframeConfirmation ? 'Clear Review Confirmation' : 'Confirm Airframe Review',
+            tone: 'primary',
+            sectionId: 'airframe',
+            disabled: airframe.frameClassValue === undefined || (!airframe.frameTypeIgnored && airframe.frameTypeValue === undefined)
+          })
+          actions.unshift({
+            kind: 'scroll',
+            label: orientationExercise.status === 'passed' ? 'Review Orientation Check' : 'Run Orientation Check',
+            panelId: panel.panelId
+          })
+          break
+        case 'outputs':
+          criteria = [
+            {
+              label: 'At least one motor output is mapped',
+              met: outputMapping.motorOutputs.length > 0
+            },
+            {
+              label: 'Motor output count matches the expected frame geometry',
+              met:
+                airframe.expectedMotorCount === undefined || outputMapping.motorOutputs.length === airframe.expectedMotorCount
+            },
+            {
+              label: 'No missing motor assignments are reported in the current mapping',
+              met: !outputMapping.notes.some((note) => note.startsWith('Missing motor assignments:'))
+            },
+            {
+              label: 'Operator reviewed the output map before any props-on activity',
+              met: outputsConfirmation !== undefined
+            },
+            {
+              label:
+                snapshot.sessionProfile === 'usb-bench'
+                  ? 'Motor order verification deferred in USB bench sessions'
+                  : 'Motor order and direction verification passed',
+              met: snapshot.sessionProfile === 'usb-bench' || motorVerification.status === 'passed'
+            }
+          ]
+          summary = `${outputMapping.motorOutputs.length} mapped motor outputs, ${outputMapping.configuredAuxOutputs.length} configured auxiliary outputs.`
+          detail = outputMapping.notes[0] ?? 'Review the output map before any motor test or props-on activity, then sign off the reviewed mapping.'
+          evidence = [
+            ...outputMapping.notes.slice(0, 2),
+            `Motor verification: ${motorVerification.status}`,
+            `Review: ${outputsConfirmation ? `confirmed at ${formatConfirmationTime(outputsConfirmation.confirmedAtMs)}` : 'pending operator confirmation'}`
+          ].slice(0, 4)
+          actions.unshift({
+            kind: outputsConfirmation ? 'clear-confirmation' : 'confirm-step',
+            label: outputsConfirmation ? 'Clear Output Review' : 'Confirm Output Review',
+            tone: 'primary',
+            sectionId: 'outputs',
+            disabled:
+              outputMapping.motorOutputs.length === 0 ||
+              outputMapping.notes.some((note) => note.startsWith('Missing motor assignments:')) ||
+              (airframe.expectedMotorCount !== undefined && outputMapping.motorOutputs.length !== airframe.expectedMotorCount)
+          })
+          actions.unshift({
+            kind: 'scroll',
+            label:
+              motorVerification.status === 'passed'
+                ? 'Review Motor Verification'
+                : snapshot.sessionProfile === 'usb-bench'
+                  ? 'Review Motor Verification Requirements'
+                  : 'Run Motor Verification',
+            panelId: panel.panelId
+          })
+          break
+        case 'accelerometer': {
+          const actionState = snapshot.guidedActions['calibrate-accelerometer']
+          criteria = [
+            {
+              label: 'Accelerometer calibration completed successfully',
+              met: actionState.status === 'succeeded' || section.status === 'complete'
+            },
+            {
+              label: 'Operator confirmed the posture prompts were completed cleanly',
+              met: accelerometerConfirmation !== undefined
+            }
+          ]
+          summary = actionState.summary
+          detail =
+            actionState.status === 'succeeded'
+              ? 'Accelerometer calibration completed successfully in the shared runtime. Confirm that all posture prompts were completed cleanly before proceeding.'
+              : actionState.instructions[0] ?? 'Run the accelerometer calibration and follow each posture prompt in order.'
+          evidence = [
+            ...actionState.statusTexts.slice(-2),
+            ...section.notes,
+            `Review: ${accelerometerConfirmation ? `confirmed at ${formatConfirmationTime(accelerometerConfirmation.confirmedAtMs)}` : 'pending operator confirmation'}`
+          ].slice(0, 4)
+          actions.unshift({
+            kind: 'guided',
+            label: guidedActionButtonLabel('calibrate-accelerometer', snapshot, busyAction),
+            tone: 'primary',
+            actionId: 'calibrate-accelerometer',
+            disabled: busyAction !== undefined || !canRunGuidedAction(snapshot, 'calibrate-accelerometer')
+          })
+          actions.splice(1, 0, {
+            kind: accelerometerConfirmation ? 'clear-confirmation' : 'confirm-step',
+            label: accelerometerConfirmation ? 'Clear Calibration Confirmation' : 'Confirm Calibration Complete',
+            tone: 'secondary',
+            sectionId: 'accelerometer',
+            disabled: actionState.status !== 'succeeded'
+          })
+          break
+        }
+        case 'compass': {
+          const actionState = snapshot.guidedActions['calibrate-compass']
+          criteria = [
+            {
+              label: 'Compass calibration completed successfully',
+              met: actionState.status === 'succeeded' || section.status === 'complete'
+            },
+            {
+              label: 'Operator confirmed the full rotation workflow completed cleanly',
+              met: compassConfirmation !== undefined
+            }
+          ]
+          summary = actionState.summary
+          detail =
+            actionState.status === 'succeeded'
+              ? 'Compass calibration completed successfully in the shared runtime. Confirm that the full rotation workflow completed cleanly before proceeding.'
+              : actionState.instructions[0] ?? 'Run compass calibration when the vehicle is fully powered and magnetometer hardware is available.'
+          evidence = [
+            ...actionState.statusTexts.slice(-2),
+            ...section.notes,
+            `Review: ${compassConfirmation ? `confirmed at ${formatConfirmationTime(compassConfirmation.confirmedAtMs)}` : 'pending operator confirmation'}`
+          ].slice(0, 4)
+          actions.unshift({
+            kind: 'guided',
+            label: guidedActionButtonLabel('calibrate-compass', snapshot, busyAction),
+            tone: 'primary',
+            actionId: 'calibrate-compass',
+            disabled: busyAction !== undefined || !canRunGuidedAction(snapshot, 'calibrate-compass')
+          })
+          actions.splice(1, 0, {
+            kind: compassConfirmation ? 'clear-confirmation' : 'confirm-step',
+            label: compassConfirmation ? 'Clear Calibration Confirmation' : 'Confirm Calibration Complete',
+            tone: 'secondary',
+            sectionId: 'compass',
+            disabled: actionState.status !== 'succeeded'
+          })
+          break
+        }
+        case 'radio':
+          criteria = [
+            {
+              label: 'Live RC telemetry is present',
+              met: snapshot.liveVerification.rcInput.verified
+            },
+            {
+              label: 'Stick range exercise passed',
+              met: rcRangeExercise.status === 'passed'
+            },
+            {
+              label: 'Channel mapping is present for roll, pitch, throttle, and yaw',
+              met: rcAxisObservations.every((observation) => observation.channelNumber >= 1)
+            },
+            {
+              label: 'Operator reviewed RC mapping and calibration values',
+              met: radioConfirmation !== undefined
+            }
+          ]
+          summary =
+            rcRangeExercise.status === 'passed'
+              ? 'Stick range exercise passed with live receiver input.'
+              : rcRangeExercise.status === 'running'
+                ? rcRangeExerciseSummary
+                : snapshot.liveVerification.rcInput.verified
+                  ? 'Live RC telemetry is present, but the full stick-range exercise still needs to pass.'
+                  : 'Waiting for live RC telemetry before the stick-range exercise can start.'
+          detail =
+            rcRangeExercise.status === 'failed'
+              ? rcRangeExercise.failureReason ?? 'Stick range exercise failed.'
+              : 'Use the live RC panel to exercise roll, pitch, yaw, and throttle through their expected ranges.'
+          evidence = [
+            snapshot.liveVerification.rcInput.verified
+              ? `${snapshot.liveVerification.rcInput.channelCount} RC channels live`
+              : 'No live RC telemetry yet',
+            `Exercise: ${rcRangeExercise.status}`,
+            `Review: ${radioConfirmation ? `confirmed at ${formatConfirmationTime(radioConfirmation.confirmedAtMs)}` : 'pending operator confirmation'}`
+          ]
+          actions.unshift({
+            kind: 'rc-range-exercise',
+            label: rcRangeExercise.status === 'passed' ? 'Run Stick Exercise Again' : 'Start Stick Exercise',
+            tone: 'primary',
+            disabled: !canRunRcRangeExercise || rcRangeExercise.status === 'running'
+          })
+          actions.splice(1, 0, {
+            kind: radioConfirmation ? 'clear-confirmation' : 'confirm-step',
+            label: radioConfirmation ? 'Clear RC Review' : 'Confirm RC Review',
+            tone: 'secondary',
+            sectionId: 'radio',
+            disabled: !snapshot.liveVerification.rcInput.verified
+          })
+          actions.splice(1, 0, {
+            kind: 'scroll',
+            label: rcCalibrationSession.status === 'ready' ? 'Stage RC Calibration' : 'Run RC Calibration',
+            panelId: panel.panelId
+          })
+          break
+        case 'failsafe':
+          criteria = [
+            {
+              label: 'Throttle failsafe setting is present',
+              met: throttleFailsafe !== undefined
+            },
+            {
+              label: 'Battery failsafe action is present',
+              met: batteryFailsafe !== undefined
+            },
+            {
+              label: 'Live RC link is verified during review',
+              met: snapshot.liveVerification.rcInput.verified
+            },
+            {
+              label: 'Live battery telemetry is verified during review',
+              met: snapshot.liveVerification.batteryTelemetry.verified
+            },
+            {
+              label: 'Operator reviewed the configured failsafe behavior',
+              met: failsafeConfirmation !== undefined
+            }
+          ]
+          summary = `Throttle failsafe ${formatArducopterThrottleFailsafe(throttleFailsafe)}, battery action ${formatArducopterBatteryFailsafeAction(
+            batteryFailsafe
+          )}.`
+          detail =
+            snapshot.liveVerification.batteryTelemetry.verified && snapshot.liveVerification.rcInput.verified
+              ? 'Failsafe settings are visible with live RC and battery telemetry present.'
+              : 'Keep both RC and battery telemetry live while reviewing the failsafe configuration.'
+          evidence = [
+            snapshot.liveVerification.rcInput.verified ? 'RC link live' : 'RC link not yet verified',
+            snapshot.liveVerification.batteryTelemetry.verified ? 'Battery telemetry live' : 'Battery telemetry not yet verified',
+            `Review: ${failsafeConfirmation ? `confirmed at ${formatConfirmationTime(failsafeConfirmation.confirmedAtMs)}` : 'pending operator confirmation'}`
+          ]
+          actions.unshift({
+            kind: failsafeConfirmation ? 'clear-confirmation' : 'confirm-step',
+            label: failsafeConfirmation ? 'Clear Failsafe Review' : 'Confirm Failsafe Review',
+            tone: 'primary',
+            sectionId: 'failsafe',
+            disabled:
+              throttleFailsafe === undefined ||
+              batteryFailsafe === undefined ||
+              !snapshot.liveVerification.rcInput.verified ||
+              !snapshot.liveVerification.batteryTelemetry.verified
+          })
+          break
+        case 'modes':
+          criteria = [
+            {
+              label: 'Mode channel is configured',
+              met: modeSwitchEstimate.channelNumber !== undefined
+            },
+            {
+              label: 'At least two flight-mode positions are assigned',
+              met: modeAssignments.length >= 2
+            },
+            {
+              label: 'Mode switch exercise passed',
+              met: modeSwitchExercise.status === 'passed'
+            }
+          ]
+          summary =
+            modeSwitchExercise.status === 'passed'
+              ? 'Mode switch exercise passed with all configured positions observed.'
+              : modeSwitchExercise.status === 'running'
+                ? modeSwitchExerciseSummary
+                : modeSwitchEstimate.estimatedSlot !== undefined
+                  ? `Live mode switch detected on CH${modeSwitchEstimate.channelNumber ?? '?'}, but the full switch exercise still needs to pass.`
+                  : 'Waiting for a configured live mode channel before starting the switch exercise.'
+          detail =
+            modeSwitchExercise.status === 'failed'
+              ? modeSwitchExercise.failureReason ?? 'Mode switch exercise failed.'
+              : 'Walk through every configured flight-mode position and confirm the app observes each slot.'
+          evidence = [
+            modeSwitchEstimate.channelNumber !== undefined ? `Mode channel: CH${modeSwitchEstimate.channelNumber}` : 'Mode channel not configured',
+            `Exercise: ${modeSwitchExercise.status}`
+          ]
+          actions.unshift({
+            kind: 'mode-switch-exercise',
+            label: modeSwitchExercise.status === 'passed' ? 'Run Switch Exercise Again' : 'Start Switch Exercise',
+            tone: 'primary',
+            disabled: !canRunModeSwitchExercise || modeSwitchExercise.status === 'running'
+          })
+          break
+        case 'power':
+          criteria = [
+            {
+              label: 'Battery monitor is configured',
+              met: batteryMonitor !== undefined && batteryMonitor > 0
+            },
+            {
+              label: 'Live battery telemetry is present',
+              met: snapshot.liveVerification.batteryTelemetry.verified
+            },
+            {
+              label: 'Operator confirmed the power and battery readings were reviewed',
+              met: powerConfirmation !== undefined
+            },
+            {
+              label: 'No active pre-arm safety issues are present in recent status text',
+              met: activePreArmIssues.length === 0
+            }
+          ]
+          summary = snapshot.liveVerification.batteryTelemetry.verified
+            ? `${formatVoltage(snapshot.liveVerification.batteryTelemetry.voltageV)} and ${formatRemaining(
+                snapshot.liveVerification.batteryTelemetry.remainingPercent
+              )}.`
+            : 'Battery telemetry has not been verified yet.'
+          detail =
+            batteryHealthLabel(snapshot) === 'Battery healthy'
+              ? 'Power telemetry is live and currently healthy. Reboot is available here when setup changes require it.'
+              : 'Use the power panel to verify the battery monitor, remaining estimate, and any required reboot/refresh steps.'
+          evidence = [
+            `Battery monitor: ${describeBatteryMonitor(batteryMonitor)}`,
+            `Health: ${batteryHealthLabel(snapshot)}`,
+            activePreArmIssues.length > 0 ? `Pre-arm: ${activePreArmIssues.length} issue(s)` : 'Pre-arm: clear',
+            `Review: ${powerConfirmation ? `confirmed at ${formatConfirmationTime(powerConfirmation.confirmedAtMs)}` : 'pending operator confirmation'}`
+          ]
+          actions.unshift({
+            kind: 'guided',
+            label: guidedActionButtonLabel('reboot-autopilot', snapshot, busyAction),
+            tone: 'secondary',
+            actionId: 'reboot-autopilot',
+            disabled: busyAction !== undefined || !canRunGuidedAction(snapshot, 'reboot-autopilot')
+          })
+          actions.unshift({
+            kind: powerConfirmation ? 'clear-confirmation' : 'confirm-step',
+            label: powerConfirmation ? 'Clear Power Review' : 'Confirm Power Review',
+            tone: 'primary',
+            sectionId: 'power',
+            disabled: batteryMonitor === undefined || batteryMonitor <= 0 || !snapshot.liveVerification.batteryTelemetry.verified
+          })
+          break
+        default:
+          break
+      }
+
+      const status = deriveSetupStatusFromCriteria(criteria)
+      const criteriaMetCount = criteria.filter((criterion) => criterion.met).length
+
+      return {
+        id: section.id,
+        title: section.title,
+        status,
+        sequenceState: 'locked',
+        summary,
+        detail,
+        evidence,
+        criteria,
+        criteriaMetCount,
+        panelId: panel.panelId,
+        panelLabel: panel.panelLabel,
+        actions
+      }
+    })
+
+    let currentIncompleteSectionTitle: string | undefined
+
+    return baseSections.map((section) => {
+      if (section.status === 'complete') {
+        return {
+          ...section,
+          sequenceState: 'complete'
+        }
+      }
+
+      if (!currentIncompleteSectionTitle) {
+        currentIncompleteSectionTitle = section.title
+        return {
+          ...section,
+          sequenceState: 'current'
+        }
+      }
+
+      return {
+        ...section,
+        sequenceState: 'locked',
+        blockingReason: setupFlowFollowUp
+          ? setupFlowFollowUp.title
+          : `Complete ${currentIncompleteSectionTitle} before moving on to ${section.title}.`
+      }
+    })
+  }, [
+    airframe.frameClassValue,
+    airframe.frameClassLabel,
+    airframe.expectedMotorCount,
+    airframe.frameTypeIgnored,
+    airframe.frameTypeLabel,
+    airframe.frameTypeValue,
+    activePreArmIssues.length,
+    batteryCapacity,
+    batteryFailsafe,
+    batteryMonitor,
+    boardOrientation,
+    busyAction,
+    canRunModeSwitchExercise,
+    canRunRcRangeExercise,
+    modeAssignments.length,
+    modeSwitchEstimate.channelNumber,
+    modeSwitchEstimate.estimatedSlot,
+    modeSwitchExercise.failureReason,
+    modeSwitchExercise.status,
+    modeSwitchExerciseSummary,
+    outputMapping.configuredAuxOutputs.length,
+    outputMapping.motorOutputs.length,
+    outputMapping.notes,
+    parameterFollowUp,
+    orientationExercise.status,
+    rcRangeExercise.failureReason,
+    rcRangeExercise.status,
+    rcRangeExerciseSummary,
+    rcAxisObservations,
+    setupConfirmations,
+    setupFlowFollowUp,
+    snapshot,
+    snapshot.liveVerification.attitudeTelemetry.verified,
+    snapshot.sessionProfile,
+    snapshot.motorTest.status,
+    throttleFailsafe
+  ])
+  const recommendedSetupSection =
+    setupFlowSections.find((section) => section.sequenceState === 'current') ??
+    setupFlowSections.find((section) => section.status !== 'complete') ??
+    setupFlowSections[0]
+  const selectedSetupSectionCandidate = setupFlowSections.find((section) => section.id === selectedSetupSectionId)
+  const selectedSetupSection =
+    !selectedSetupSectionCandidate || selectedSetupSectionCandidate.sequenceState === 'locked'
+      ? recommendedSetupSection
+      : selectedSetupSectionCandidate
+  const completedSetupSectionCount = setupFlowSections.filter((section) => section.status === 'complete').length
+  const setupFlowProgress = setupFlowSections.length === 0 ? 0 : (completedSetupSectionCount / setupFlowSections.length) * 100
+  const guidedSetupComplete = setupFlowSections.length > 0 && completedSetupSectionCount === setupFlowSections.length
+
+  useEffect(() => {
+    if (!recommendedSetupSection) {
+      return
+    }
+
+    if (
+      !selectedSetupSectionCandidate ||
+      selectedSetupSectionCandidate.sequenceState === 'locked'
+    ) {
+      setSelectedSetupSectionId(recommendedSetupSection.id)
+    }
+  }, [recommendedSetupSection, selectedSetupSectionCandidate])
+
+  function handleSetupFlowAction(action: SetupFlowActionDescriptor): void {
+    if (action.disabled) {
+      return
+    }
+
+    switch (action.kind) {
+      case 'guided':
+        if (action.actionId) {
+          void handleGuidedAction(action.actionId)
+        }
+        return
+      case 'mode-switch-exercise':
+        handleStartModeSwitchExercise()
+        scrollToPanel('setup-panel-rc')
+        return
+      case 'rc-range-exercise':
+        handleStartRcRangeExercise()
+        scrollToPanel('setup-panel-rc')
+        return
+      case 'confirm-step':
+        if (action.sectionId) {
+          confirmSetupSection(action.sectionId)
+        }
+        return
+      case 'clear-confirmation':
+        if (action.sectionId) {
+          clearSetupSectionConfirmation(action.sectionId)
+        }
+        return
+      case 'scroll':
+        if (action.panelId) {
+          scrollToPanel(action.panelId)
+        }
+        return
+      default:
+        return
+    }
+  }
 
   return (
     <main className="app-shell">
@@ -1053,61 +2462,60 @@ export function App() {
       </header>
 
       <section className="grid two-up">
-        <Panel
-          title="Connection"
-          subtitle="The runtime waits for heartbeat, tracks sync progress, and can switch between full-power and USB-bench setup semantics."
-          actions={
-            <div className="button-row">
-              <select
-                value={transportMode}
-                onChange={(event) => setTransportMode(event.target.value as TransportMode)}
-                disabled={busyAction !== undefined || snapshot.connection.kind === 'connected'}
-              >
-                <option value="demo">Demo transport</option>
-                <option value="web-serial" disabled={!webSerialSupported}>
-                  Browser serial{webSerialSupported ? '' : ' (unsupported)'}
-                </option>
-              </select>
-              <select value={sessionProfile} onChange={(event) => setSessionProfile(event.target.value as SessionProfile)}>
-                <option value="full-power">Full power</option>
-                <option value="usb-bench">USB bench</option>
-              </select>
-              <button
-                style={buttonStyle('primary')}
-                onClick={() => void handleConnect()}
-                disabled={busyAction !== undefined || snapshot.connection.kind === 'connected'}
-              >
-                Connect
-              </button>
-              <button
-                style={buttonStyle()}
-                onClick={() => void handleDisconnect()}
-                disabled={busyAction !== undefined || snapshot.connection.kind !== 'connected'}
-              >
-                Disconnect
-              </button>
-            </div>
-          }
-        >
-          <KeyValueRow
-            label="Transport"
-            value={transportMode === 'demo' ? 'Demo MAVLink stream' : webSerialSupported ? 'Browser Web Serial' : 'Unavailable'}
-          />
-          <KeyValueRow label="Session" value={snapshot.sessionProfile === 'usb-bench' ? 'USB Bench' : 'Full Power'} />
-          <KeyValueRow label="Vehicle" value={snapshot.vehicle?.vehicle ?? 'Waiting for heartbeat'} />
-          <KeyValueRow label="Firmware" value={snapshot.vehicle?.firmware ?? 'Unknown'} />
-          <KeyValueRow label="Mode" value={snapshot.vehicle?.flightMode ?? 'Unknown'} />
-          <KeyValueRow label="RC Link" value={formatRcLink(snapshot)} />
-          <KeyValueRow label="Battery" value={formatBatteryTelemetry(snapshot)} />
-          <KeyValueRow label="Sync" value={formatParameterSync(snapshot)} />
-          <KeyValueRow label="Duplicate Frames" value={String(snapshot.parameterStats.duplicateFrames)} />
-          <div className="sync-meter" aria-hidden="true">
-            <div
-              className="sync-meter__fill"
-              style={{ width: `${parameterSyncWidth}%` }}
+        <div id="setup-panel-link">
+          <Panel
+            title="Connection"
+            subtitle="The runtime waits for heartbeat, tracks sync progress, and can switch between full-power and USB-bench setup semantics."
+            actions={
+              <div className="button-row">
+                <select
+                  value={transportMode}
+                  onChange={(event) => setTransportMode(event.target.value as TransportMode)}
+                  disabled={busyAction !== undefined || snapshot.connection.kind === 'connected'}
+                >
+                  <option value="demo">Demo transport</option>
+                  <option value="web-serial" disabled={!webSerialSupported}>
+                    Browser serial{webSerialSupported ? '' : ' (unsupported)'}
+                  </option>
+                </select>
+                <select value={sessionProfile} onChange={(event) => setSessionProfile(event.target.value as SessionProfile)}>
+                  <option value="full-power">Full power</option>
+                  <option value="usb-bench">USB bench</option>
+                </select>
+                <button
+                  style={buttonStyle('primary')}
+                  onClick={() => void handleConnect()}
+                  disabled={busyAction !== undefined || snapshot.connection.kind === 'connected'}
+                >
+                  Connect
+                </button>
+                <button
+                  style={buttonStyle()}
+                  onClick={() => void handleDisconnect()}
+                  disabled={busyAction !== undefined || snapshot.connection.kind !== 'connected'}
+                >
+                  Disconnect
+                </button>
+              </div>
+            }
+          >
+            <KeyValueRow
+              label="Transport"
+              value={transportMode === 'demo' ? 'Demo MAVLink stream' : webSerialSupported ? 'Browser Web Serial' : 'Unavailable'}
             />
-          </div>
-        </Panel>
+            <KeyValueRow label="Session" value={snapshot.sessionProfile === 'usb-bench' ? 'USB Bench' : 'Full Power'} />
+            <KeyValueRow label="Vehicle" value={snapshot.vehicle?.vehicle ?? 'Waiting for heartbeat'} />
+            <KeyValueRow label="Firmware" value={snapshot.vehicle?.firmware ?? 'Unknown'} />
+            <KeyValueRow label="Mode" value={snapshot.vehicle?.flightMode ?? 'Unknown'} />
+            <KeyValueRow label="RC Link" value={formatRcLink(snapshot)} />
+            <KeyValueRow label="Battery" value={formatBatteryTelemetry(snapshot)} />
+            <KeyValueRow label="Sync" value={formatParameterSync(snapshot)} />
+            <KeyValueRow label="Duplicate Frames" value={String(snapshot.parameterStats.duplicateFrames)} />
+            <div className="sync-meter" aria-hidden="true">
+              <div className="sync-meter__fill" style={{ width: `${parameterSyncWidth}%` }} />
+            </div>
+          </Panel>
+        </div>
 
         <Panel title="Status Log" subtitle="Recent autopilot status text from the shared runtime.">
           <div className="status-log">
@@ -1122,11 +2530,154 @@ export function App() {
         </Panel>
       </section>
 
-      <section className="grid two-up">
+      {selectedSetupSection ? (
         <Panel
-          title="Live RC Inputs"
-          subtitle="Receiver telemetry, calibrated channel bars, and an estimated flight-mode switch position from the current RC stream."
+          title="Setup Flow"
+          subtitle="A stricter guided sequence for the current ArduCopter setup session, with explicit completion criteria and locked later steps until earlier work is verified."
+          actions={
+            <div className="button-row">
+              <StatusBadge tone={completedSetupSectionCount === setupFlowSections.length ? 'success' : 'warning'}>
+                {completedSetupSectionCount}/{setupFlowSections.length} complete
+              </StatusBadge>
+              <button
+                style={buttonStyle()}
+                onClick={() => setSelectedSetupSectionId(recommendedSetupSection?.id)}
+                disabled={!recommendedSetupSection || recommendedSetupSection.id === selectedSetupSection.id}
+              >
+                Focus Next Incomplete
+              </button>
+            </div>
+          }
         >
+          <div className="setup-flow">
+            {guidedSetupComplete ? (
+              <div className="setup-flow__banner setup-flow__banner--success">
+                <div>
+                  <strong>Guided setup complete</strong>
+                  <p>
+                    Every guided setup step for this session has been verified and operator-confirmed. You can move on to parameter refinement,
+                    optional motor testing, or backup/export work.
+                  </p>
+                </div>
+              </div>
+            ) : null}
+
+            {setupFlowFollowUp ? (
+              <div className={`setup-flow__banner setup-flow__banner--${setupFlowFollowUp.tone}`}>
+                <div>
+                  <strong>{setupFlowFollowUp.title}</strong>
+                  <p>{setupFlowFollowUp.text}</p>
+                </div>
+                {setupFlowFollowUp.actions.length > 0 ? (
+                  <div className="setup-flow__actions">
+                    {setupFlowFollowUp.actions.map((action) => (
+                      <button
+                        key={`setup-follow-up:${action.kind}:${action.label}`}
+                        style={buttonStyle(action.tone ?? 'secondary')}
+                        onClick={() => handleSetupFlowAction(action)}
+                        disabled={action.disabled}
+                      >
+                        {action.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            <div className="setup-flow__current">
+              <div>
+                <p className="eyebrow">Current Step</p>
+                <h3>{selectedSetupSection.title}</h3>
+                <p>{selectedSetupSection.summary}</p>
+              </div>
+              <div className="setup-flow__current-status">
+                <StatusBadge tone={toneForSetupSequence(selectedSetupSection.sequenceState)}>{selectedSetupSection.sequenceState}</StatusBadge>
+                <StatusBadge tone={toneForSetup(selectedSetupSection.status)}>
+                  {selectedSetupSection.criteriaMetCount}/{selectedSetupSection.criteria.length} criteria
+                </StatusBadge>
+              </div>
+            </div>
+
+            <div className="switch-exercise-progress" aria-hidden="true">
+              <div className="switch-exercise-progress__fill" style={{ width: `${setupFlowProgress}%` }} />
+            </div>
+
+            <div className="setup-flow__steps">
+              {setupFlowSections.map((section, index) => (
+                <button
+                  key={section.id}
+                  type="button"
+                  className={`setup-flow-step${section.id === selectedSetupSection.id ? ' is-active' : ''}${section.status === 'complete' ? ' is-complete' : ''}${section.sequenceState === 'current' ? ' is-current' : ''}${section.sequenceState === 'locked' ? ' is-locked' : ''}`}
+                  onClick={() => setSelectedSetupSectionId(section.id)}
+                  disabled={section.sequenceState === 'locked'}
+                >
+                  <small className="setup-flow-step__eyebrow">Step {index + 1}</small>
+                  <span>{section.title}</span>
+                  <small>{section.sequenceState === 'locked' ? section.blockingReason ?? section.summary : section.summary}</small>
+                  <div className="setup-flow-step__meta">
+                    <StatusBadge tone={toneForSetupSequence(section.sequenceState)}>{section.sequenceState}</StatusBadge>
+                    <span>
+                      {section.criteriaMetCount}/{section.criteria.length} criteria
+                    </span>
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            <div className="setup-flow__detail">
+              <div>
+                <h3>{selectedSetupSection.title}</h3>
+                <p>{selectedSetupSection.detail}</p>
+                <div className="setup-flow__criteria">
+                  <strong>Completion Criteria</strong>
+                  <ul>
+                    {selectedSetupSection.criteria.map((criterion) => (
+                      <li key={criterion.label} className={criterion.met ? 'is-met' : undefined}>
+                        <span>{criterion.met ? 'Complete' : 'Pending'}</span>
+                        <span>{criterion.label}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                {selectedSetupSection.evidence.length > 0 ? (
+                  <div className="config-pills">
+                    {selectedSetupSection.evidence.map((item) => (
+                      <span key={item}>{item}</span>
+                    ))}
+                  </div>
+                ) : null}
+                {selectedSetupSection.blockingReason ? <p className="setup-flow__blocking-copy">{selectedSetupSection.blockingReason}</p> : null}
+              </div>
+
+              <div className="setup-flow__actions">
+                {selectedSetupSection.actions.map((action) => (
+                  <button
+                    key={`${selectedSetupSection.id}:${action.kind}:${action.label}`}
+                    style={buttonStyle(action.tone ?? 'secondary')}
+                    onClick={() => handleSetupFlowAction(action)}
+                    disabled={action.disabled}
+                  >
+                    {action.label}
+                  </button>
+                ))}
+              </div>
+
+              <small>
+                Primary surface for this step: {selectedSetupSection.panelLabel}. Use the detailed panels below for the full live context and operator
+                prompts.
+              </small>
+            </div>
+          </div>
+        </Panel>
+      ) : null}
+
+      <section className="grid two-up">
+        <div id="setup-panel-rc">
+          <Panel
+            title="Live RC Inputs"
+            subtitle="Receiver telemetry, calibrated channel bars, and an estimated flight-mode switch position from the current RC stream."
+          >
           <div className="telemetry-stack">
             <div className="telemetry-header">
               <div>
@@ -1307,6 +2858,86 @@ export function App() {
               </div>
             </div>
 
+            <div className="rc-calibration-card">
+              <div className="switch-exercise-card__header">
+                <div>
+                  <strong>RC calibration capture</strong>
+                  <p>{rcCalibrationSummary}</p>
+                </div>
+                <StatusBadge tone={toneForModeSwitchExercise(rcCalibrationSession.status === 'ready' ? 'passed' : rcCalibrationSession.status === 'capturing' ? 'running' : rcCalibrationSession.status === 'failed' ? 'failed' : 'idle')}>
+                  {rcCalibrationSession.status}
+                </StatusBadge>
+              </div>
+
+              <div className="config-pills">
+                {rcAxisObservations.map((axis) => (
+                  <span key={axis.axisId}>
+                    {axis.label}: CH{axis.channelNumber}
+                  </span>
+                ))}
+              </div>
+
+              <div className="rc-range-axis-grid">
+                {RC_CALIBRATION_AXIS_ORDER.map((axisId) => {
+                  const capture = rcCalibrationSession.captures[axisId]
+                  return (
+                    <article
+                      key={axisId}
+                      className={`rc-range-axis-card${rcCalibrationCaptureComplete(capture) ? ' rc-range-axis-card--complete' : ''}`}
+                    >
+                      <div className="rc-range-axis-card__header">
+                        <strong>{capture.label}</strong>
+                        <span>CH{capture.channelNumber}</span>
+                      </div>
+                      <p>
+                        Min {capture.observedMin !== undefined ? Math.round(capture.observedMin) : 'Unknown'} us · Max{' '}
+                        {capture.observedMax !== undefined ? Math.round(capture.observedMax) : 'Unknown'} us
+                      </p>
+                      <div className="config-pills">
+                        <span className={capture.lowObserved ? 'is-complete' : undefined}>Low</span>
+                        <span className={capture.highObserved ? 'is-complete' : undefined}>High</span>
+                        {axisId !== 'throttle' ? (
+                          <span className={capture.centeredObserved ? 'is-complete' : undefined}>
+                            Trim {capture.trimPwm !== undefined ? Math.round(capture.trimPwm) : 'pending'}
+                          </span>
+                        ) : null}
+                      </div>
+                    </article>
+                  )
+                })}
+              </div>
+
+              <ol className="switch-exercise-instructions">
+                <li>Start capture with the sticks centered and throttle low.</li>
+                <li>Move roll, pitch, throttle, and yaw through their full travel.</li>
+                <li>Stage the captured values into the parameter editor, then apply and refresh before confirming the radio step.</li>
+              </ol>
+
+              <div className="switch-exercise-controls">
+                <button
+                  style={buttonStyle('primary')}
+                  onClick={handleStartRcCalibrationCapture}
+                  disabled={!canCaptureRcCalibration || rcCalibrationSession.status === 'capturing'}
+                >
+                  {rcCalibrationSession.status === 'ready' ? 'Capture Again' : 'Start Capture'}
+                </button>
+                <button
+                  style={buttonStyle()}
+                  onClick={handleResetRcCalibrationCapture}
+                  disabled={rcCalibrationSession.status === 'idle'}
+                >
+                  Reset
+                </button>
+                <button
+                  style={buttonStyle('secondary')}
+                  onClick={handleStageRcCalibrationDrafts}
+                  disabled={rcCalibrationSession.status !== 'ready'}
+                >
+                  Stage Captured Values
+                </button>
+              </div>
+            </div>
+
             {modeAssignments.length > 0 ? (
               <div className="config-pills">
                 {modeAssignments.map((assignment) => (
@@ -1342,12 +2973,14 @@ export function App() {
               ))}
             </div>
           </div>
-        </Panel>
+          </Panel>
+        </div>
 
-        <Panel
-          title="Power & Failsafe"
-          subtitle="Live battery telemetry plus the key power- and failsafe-related settings already present on the vehicle."
-        >
+        <div id="setup-panel-power">
+          <Panel
+            title="Power & Failsafe"
+            subtitle="Live battery telemetry plus the key power- and failsafe-related settings already present on the vehicle."
+          >
           <div className="telemetry-stack">
             <div className="telemetry-header">
               <div>
@@ -1386,17 +3019,45 @@ export function App() {
               <span>Throttle failsafe: {formatArducopterThrottleFailsafe(throttleFailsafe)}</span>
             </div>
 
+            <div className="prearm-card">
+              <div className="switch-exercise-card__header">
+                <div>
+                  <strong>Pre-arm safety</strong>
+                  <p>
+                    {activePreArmIssues.length === 0
+                      ? 'No recent pre-arm issues detected in status text.'
+                      : `${activePreArmIssues.length} recent pre-arm issue(s) need to be cleared before first flight.`}
+                  </p>
+                </div>
+                <StatusBadge tone={activePreArmIssues.length === 0 ? 'success' : 'warning'}>
+                  {activePreArmIssues.length === 0 ? 'Clear' : `${activePreArmIssues.length} issues`}
+                </StatusBadge>
+              </div>
+
+              {activePreArmIssues.length > 0 ? (
+                <ul className="output-note-list">
+                  {activePreArmIssues.map((issue) => (
+                    <li key={issue}>{issue}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="telemetry-note">Keep the FC powered and watch this card for new pre-arm warnings as setup changes are applied.</p>
+              )}
+            </div>
+
             <p className="telemetry-note">
               The setup checklist now treats these sections as truly complete only when both the configuration values and the live telemetry agree.
             </p>
           </div>
-        </Panel>
+          </Panel>
+        </div>
       </section>
 
-      <Panel
-        title="Airframe & Outputs"
-        subtitle="Review frame geometry and primary motor/peripheral assignments before any output testing. This surface stays read-only for now."
-      >
+      <div id="setup-panel-outputs">
+        <Panel
+          title="Airframe & Outputs"
+          subtitle="Review frame geometry and primary motor/peripheral assignments before any output testing. This surface stays read-only for now."
+        >
         <div className="telemetry-stack">
           <div className="telemetry-metric-grid">
             <article className="telemetry-metric-card">
@@ -1418,6 +3079,73 @@ export function App() {
                 {airframe.expectedMotorCount !== undefined ? ` / ${airframe.expectedMotorCount}` : ''}
               </strong>
             </article>
+          </div>
+
+          <div className="orientation-card">
+            <div className="switch-exercise-card__header">
+              <div>
+                <strong>Board orientation</strong>
+                <p>{orientationExerciseSummary}</p>
+              </div>
+              <StatusBadge tone={toneForModeSwitchExercise(orientationExercise.status)}>{orientationExercise.status}</StatusBadge>
+            </div>
+
+            <div className="telemetry-metric-grid">
+              <article className="telemetry-metric-card">
+                <span>AHRS_ORIENTATION</span>
+                <strong>{formatOrientationLabel(boardOrientation)}</strong>
+              </article>
+              <article className="telemetry-metric-card">
+                <span>Roll</span>
+                <strong>{formatDegrees(snapshot.liveVerification.attitudeTelemetry.rollDeg)}</strong>
+              </article>
+              <article className="telemetry-metric-card">
+                <span>Pitch</span>
+                <strong>{formatDegrees(snapshot.liveVerification.attitudeTelemetry.pitchDeg)}</strong>
+              </article>
+              <article className="telemetry-metric-card">
+                <span>Yaw</span>
+                <strong>{formatDegrees(snapshot.liveVerification.attitudeTelemetry.yawDeg)}</strong>
+              </article>
+            </div>
+
+            <div className="config-pills">
+              {ORIENTATION_EXERCISE_ORDER.map((step) => (
+                <span key={step} className={orientationExercise.completedSteps.includes(step) ? 'is-complete' : orientationExercise.currentTargetStep === step ? 'is-target' : undefined}>
+                  {orientationStepLabel(step)}
+                </span>
+              ))}
+            </div>
+
+            <ol className="switch-exercise-instructions">
+              {orientationExerciseInstructions.map((instruction) => (
+                <li key={instruction}>{instruction}</li>
+              ))}
+            </ol>
+
+            <div className="switch-exercise-controls">
+              <button
+                style={buttonStyle('primary')}
+                onClick={handleStartOrientationExercise}
+                disabled={!canRunOrientationExercise || orientationExercise.status === 'running'}
+              >
+                {orientationExercise.status === 'passed' ? 'Run Again' : 'Start Orientation Check'}
+              </button>
+              <button
+                style={buttonStyle()}
+                onClick={handleResetOrientationExercise}
+                disabled={orientationExercise.status === 'idle'}
+              >
+                Reset
+              </button>
+              <button
+                style={buttonStyle('secondary')}
+                onClick={handleFailOrientationExercise}
+                disabled={orientationExercise.status !== 'running'}
+              >
+                Mark Failed
+              </button>
+            </div>
           </div>
 
           <div className="config-pills">
@@ -1563,6 +3291,77 @@ export function App() {
             </div>
           </div>
 
+          <div className="motor-verification-card">
+            <div className="switch-exercise-card__header">
+              <div>
+                <strong>Motor order & direction</strong>
+                <p>{motorVerificationSummary}</p>
+              </div>
+              <StatusBadge tone={toneForModeSwitchExercise(motorVerification.status)}>{motorVerification.status}</StatusBadge>
+            </div>
+
+            <div className="config-pills">
+              {outputMapping.motorOutputs.map((output) => {
+                const verified = motorVerification.verifiedOutputs.includes(output.channelNumber)
+                const targeted = motorVerification.currentOutputChannel === output.channelNumber
+                return (
+                  <span key={output.paramId} className={verified ? 'is-complete' : targeted ? 'is-target' : undefined}>
+                    OUT{output.channelNumber}
+                    {output.motorNumber !== undefined ? ` / M${output.motorNumber}` : ''} · {output.functionLabel}
+                  </span>
+                )
+              })}
+            </div>
+
+            <ol className="switch-exercise-instructions">
+              <li>Remove props, acknowledge the motor-test guardrails, and use full-power mode only.</li>
+              <li>Spin the targeted output with the guarded motor test.</li>
+              <li>Confirm that the expected motor spins and that direction is correct for the frame.</li>
+            </ol>
+
+            <div className="switch-exercise-controls">
+              <button
+                style={buttonStyle('primary')}
+                onClick={handleStartMotorVerification}
+                disabled={!canRunMotorVerification || motorVerification.status === 'running'}
+              >
+                {motorVerification.status === 'passed' ? 'Run Again' : 'Start Verification'}
+              </button>
+              <button
+                style={buttonStyle()}
+                onClick={() => setMotorTestOutput(motorVerification.currentOutputChannel)}
+                disabled={motorVerification.currentOutputChannel === undefined}
+              >
+                Target Current Output
+              </button>
+              <button
+                style={buttonStyle('secondary')}
+                onClick={handleConfirmMotorVerification}
+                disabled={
+                  motorVerification.status !== 'running' ||
+                  snapshot.motorTest.status !== 'succeeded' ||
+                  snapshot.motorTest.selectedOutputChannel !== motorVerification.currentOutputChannel
+                }
+              >
+                Confirm Motor & Direction
+              </button>
+              <button
+                style={buttonStyle('secondary')}
+                onClick={handleFailMotorVerification}
+                disabled={motorVerification.status !== 'running'}
+              >
+                Mark Failed
+              </button>
+              <button
+                style={buttonStyle()}
+                onClick={handleResetMotorVerification}
+                disabled={motorVerification.status === 'idle'}
+              >
+                Reset
+              </button>
+            </div>
+          </div>
+
           {visibleDisabledOutputs.length > 0 ? (
             <p className="telemetry-note">
               Disabled outputs in view: {visibleDisabledOutputs.map((output) => `OUT${output.channelNumber}`).join(', ')}
@@ -1572,12 +3371,14 @@ export function App() {
             </p>
           ) : null}
         </div>
-      </Panel>
+        </Panel>
+      </div>
 
-      <Panel
-        title="Guided Setup"
-        subtitle="Initial alpha priority: setup and calibration workflows for ArduCopter. Live operator prompts now stay attached to the action that generated them."
-      >
+      <div id="setup-panel-guided">
+        <Panel
+          title="Guided Setup"
+          subtitle="Initial alpha priority: setup and calibration workflows for ArduCopter. Live operator prompts now stay attached to the action that generated them."
+        >
         <div className="setup-grid">
           {snapshot.setupSections.map((section) => (
             <article key={section.id} className="setup-card">
@@ -1653,7 +3454,8 @@ export function App() {
             </article>
           ))}
         </div>
-      </Panel>
+        </Panel>
+      </div>
 
       <Panel title="Parameter Editor" subtitle="Stage changes locally, review the diff, then apply them through the shared runtime.">
         <div className="parameter-toolbar">
@@ -1739,7 +3541,7 @@ export function App() {
           {parameterFollowUp ? (
             <div className="parameter-follow-up">
               <StatusBadge tone={parameterFollowUp.requiresReboot ? 'warning' : 'neutral'}>
-                {parameterFollowUp.requiresReboot ? 'follow-up' : 'refresh'}
+                {parameterFollowUp.requiresReboot ? 'reboot' : 'refresh'}
               </StatusBadge>
               <p>{parameterFollowUp.text}</p>
               <div className="button-row">
@@ -1755,12 +3557,9 @@ export function App() {
                 <button
                   style={buttonStyle()}
                   onClick={() => void handleGuidedAction('request-parameters')}
-                  disabled={busyAction !== undefined || !canRunGuidedAction(snapshot, 'request-parameters')}
+                  disabled={parameterFollowUp.requiresReboot || busyAction !== undefined || !canRunGuidedAction(snapshot, 'request-parameters')}
                 >
                   Pull Parameters
-                </button>
-                <button style={buttonStyle()} onClick={() => setParameterFollowUp(undefined)} disabled={busyAction !== undefined}>
-                  Dismiss
                 </button>
               </div>
             </div>

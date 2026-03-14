@@ -53,6 +53,17 @@ export interface SysStatusMessage {
   sensorsHealthExtended: number
 }
 
+export interface AttitudeMessage {
+  type: 'ATTITUDE'
+  timeBootMs: number
+  rollRad: number
+  pitchRad: number
+  yawRad: number
+  rollSpeedRadS: number
+  pitchSpeedRadS: number
+  yawSpeedRadS: number
+}
+
 export interface ParamRequestListMessage {
   type: 'PARAM_REQUEST_LIST'
   targetSystem: number
@@ -91,6 +102,7 @@ export type MavlinkMessage =
   | HeartbeatMessage
   | RcChannelsMessage
   | SysStatusMessage
+  | AttitudeMessage
   | ParamValueMessage
   | StatusTextMessage
   | ParamRequestListMessage

@@ -7,6 +7,7 @@ import type {
 } from '@arduconfig/param-metadata'
 import { formatArducopterFlightMode } from '@arduconfig/param-metadata'
 import type {
+  AttitudeMessage,
   CommandAckMessage,
   CommandLongMessage,
   HeartbeatMessage,
@@ -102,6 +103,10 @@ const MAX_GUIDED_ACTION_STATUS_TEXTS = 5
 const MOTOR_TEST_COMPLETION_BUFFER_MS = 250
 const LIVE_TELEMETRY_INTERVAL_US = 200000
 const LIVE_TELEMETRY_REQUESTS = [
+  {
+    messageId: MAVLINK_MESSAGE_IDS.ATTITUDE,
+    label: 'ATTITUDE'
+  },
   {
     messageId: MAVLINK_MESSAGE_IDS.RC_CHANNELS,
     label: 'RC_CHANNELS'
@@ -604,6 +609,9 @@ export class ArduPilotConfiguratorRuntime {
       case 'RC_CHANNELS':
         this.processRcChannels(envelope.message)
         break
+      case 'ATTITUDE':
+        this.processAttitude(envelope.message)
+        break
       case 'COMMAND_ACK':
         this.processCommandAck(envelope.message)
         break
@@ -714,6 +722,16 @@ export class ArduPilotConfiguratorRuntime {
       lastSeenAtMs: Date.now()
     }
     this.liveVerification.satisfiedSignals = recomputeSatisfiedSignals(this.liveVerification)
+  }
+
+  private processAttitude(message: AttitudeMessage): void {
+    this.liveVerification.attitudeTelemetry = {
+      verified: true,
+      rollDeg: radiansToDegrees(message.rollRad),
+      pitchDeg: radiansToDegrees(message.pitchRad),
+      yawDeg: radiansToDegrees(message.yawRad),
+      lastSeenAtMs: Date.now()
+    }
   }
 
   private processSysStatus(message: SysStatusMessage): void {
@@ -1127,6 +1145,9 @@ function createIdleLiveVerification(): LiveVerificationState {
     },
     batteryTelemetry: {
       verified: false
+    },
+    attitudeTelemetry: {
+      verified: false
     }
   }
 }
@@ -1180,6 +1201,9 @@ function cloneLiveVerification(liveVerification: LiveVerificationState): LiveVer
     },
     batteryTelemetry: {
       ...liveVerification.batteryTelemetry
+    },
+    attitudeTelemetry: {
+      ...liveVerification.attitudeTelemetry
     }
   }
 }
@@ -1397,6 +1421,10 @@ function recomputeSatisfiedSignals(liveVerification: LiveVerificationState): Liv
     signals.push('battery-telemetry')
   }
   return signals
+}
+
+function radiansToDegrees(value: number): number {
+  return Number((value * (180 / Math.PI)).toFixed(1))
 }
 
 function liveSignalLabel(signalId: LiveSignalId): string {

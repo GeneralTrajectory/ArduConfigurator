@@ -73,6 +73,19 @@ function rcChannelsMessage(timeBootMs: number): MavlinkMessage {
   }
 }
 
+function attitudeMessage(timeBootMs: number, rollRad = 0, pitchRad = 0, yawRad = 0): MavlinkMessage {
+  return {
+    type: 'ATTITUDE',
+    timeBootMs,
+    rollRad,
+    pitchRad,
+    yawRad,
+    rollSpeedRadS: 0,
+    pitchSpeedRadS: 0,
+    yawSpeedRadS: 0
+  }
+}
+
 function sysStatusMessage(voltageBatteryMv: number, batteryRemaining: number): MavlinkMessage {
   return {
     type: 'SYS_STATUS',
@@ -139,7 +152,8 @@ export function createArduCopterMockScenario(): MockScenario {
         })
       ),
       codec.encode(envelope(3, sysStatusMessage(16420, 72))),
-      codec.encode(envelope(4, rcChannelsMessage(1200)))
+      codec.encode(envelope(4, rcChannelsMessage(1200))),
+      codec.encode(envelope(5, attitudeMessage(1200)))
     ],
     respondToOutbound: (frame) => {
       const outbound = decodeSingleV2Envelope(frame)
@@ -200,13 +214,16 @@ export function createArduCopterMockScenario(): MockScenario {
             if (requestedMessageId === MAVLINK_MESSAGE_IDS.SYS_STATUS) {
               responses.push(codec.encode(envelope(92, sysStatusMessage(16420, 72))))
             }
+            if (requestedMessageId === MAVLINK_MESSAGE_IDS.ATTITUDE) {
+              responses.push(codec.encode(envelope(93, attitudeMessage(1600))))
+            }
           } else if (outbound.message.command === MAV_CMD.DO_MOTOR_TEST) {
             const outputChannel = Math.round(outbound.message.params[0] ?? 0)
             const throttlePercent = Number((outbound.message.params[2] ?? 0).toFixed(1))
             const durationSeconds = Number((outbound.message.params[3] ?? 0).toFixed(1))
             responses.push(
               codec.encode(
-                envelope(93, {
+                envelope(94, {
                   type: 'COMMAND_ACK',
                   command: MAV_CMD.DO_MOTOR_TEST,
                   result: MAV_RESULT.ACCEPTED,
@@ -219,7 +236,7 @@ export function createArduCopterMockScenario(): MockScenario {
             )
             responses.push(
               codec.encode(
-                envelope(94, {
+                envelope(95, {
                   type: 'STATUSTEXT',
                   severity: MAV_SEVERITY.WARNING,
                   text: `Motor test accepted for OUT${outputChannel} at ${throttlePercent}% for ${durationSeconds}s.`,

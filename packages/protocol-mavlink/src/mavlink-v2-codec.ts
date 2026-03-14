@@ -12,6 +12,7 @@ import {
 } from './constants.js'
 import type { StreamingCodec } from './json-lines-codec.js'
 import type {
+  AttitudeMessage,
   CommandAckMessage,
   CommandLongMessage,
   HeartbeatMessage,
@@ -149,6 +150,8 @@ function encodePayload(message: MavlinkMessage): Uint8Array {
       return encodeParamValuePayload(message)
     case 'PARAM_SET':
       return encodeParamSetPayload(message)
+    case 'ATTITUDE':
+      return encodeAttitudePayload(message)
     case 'RC_CHANNELS':
       return encodeRcChannelsPayload(message)
     case 'COMMAND_ACK':
@@ -174,6 +177,8 @@ function decodePayload(messageId: number, payload: Uint8Array): MavlinkMessage |
       return decodeParamValuePayload(payload)
     case MAVLINK_MESSAGE_IDS.PARAM_SET:
       return decodeParamSetPayload(payload)
+    case MAVLINK_MESSAGE_IDS.ATTITUDE:
+      return decodeAttitudePayload(payload)
     case MAVLINK_MESSAGE_IDS.RC_CHANNELS:
       return decodeRcChannelsPayload(payload)
     case MAVLINK_MESSAGE_IDS.COMMAND_ACK:
@@ -199,6 +204,8 @@ function messageIdFor(message: MavlinkMessage): number {
       return MAVLINK_MESSAGE_IDS.PARAM_VALUE
     case 'PARAM_SET':
       return MAVLINK_MESSAGE_IDS.PARAM_SET
+    case 'ATTITUDE':
+      return MAVLINK_MESSAGE_IDS.ATTITUDE
     case 'RC_CHANNELS':
       return MAVLINK_MESSAGE_IDS.RC_CHANNELS
     case 'COMMAND_ACK':
@@ -257,6 +264,33 @@ function encodeSysStatusPayload(message: SysStatusMessage): Uint8Array {
   view.setUint32(35, message.sensorsEnabledExtended, true)
   view.setUint32(39, message.sensorsHealthExtended, true)
   return payload
+}
+
+function encodeAttitudePayload(message: AttitudeMessage): Uint8Array {
+  const payload = new Uint8Array(MAVLINK_PAYLOAD_LENGTHS[MAVLINK_MESSAGE_IDS.ATTITUDE])
+  const view = new DataView(payload.buffer)
+  view.setUint32(0, message.timeBootMs, true)
+  view.setFloat32(4, message.rollRad, true)
+  view.setFloat32(8, message.pitchRad, true)
+  view.setFloat32(12, message.yawRad, true)
+  view.setFloat32(16, message.rollSpeedRadS, true)
+  view.setFloat32(20, message.pitchSpeedRadS, true)
+  view.setFloat32(24, message.yawSpeedRadS, true)
+  return payload
+}
+
+function decodeAttitudePayload(payload: Uint8Array): AttitudeMessage {
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+  return {
+    type: 'ATTITUDE',
+    timeBootMs: view.getUint32(0, true),
+    rollRad: view.getFloat32(4, true),
+    pitchRad: view.getFloat32(8, true),
+    yawRad: view.getFloat32(12, true),
+    rollSpeedRadS: view.getFloat32(16, true),
+    pitchSpeedRadS: view.getFloat32(20, true),
+    yawSpeedRadS: view.getFloat32(24, true)
+  }
 }
 
 function decodeSysStatusPayload(payload: Uint8Array): SysStatusMessage {

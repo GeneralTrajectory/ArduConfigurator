@@ -85,6 +85,235 @@ select {
   gap: 10px;
 }
 
+.setup-flow {
+  display: grid;
+  gap: 18px;
+}
+
+.setup-flow__banner {
+  display: grid;
+  gap: 14px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid #243049;
+  background: #101a2a;
+}
+
+.setup-flow__banner strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.setup-flow__banner p {
+  margin: 0;
+  color: #c8d4e8;
+  line-height: 1.5;
+}
+
+.setup-flow__banner--warning {
+  border-color: rgba(244, 185, 66, 0.46);
+  background: rgba(72, 51, 12, 0.28);
+}
+
+.setup-flow__banner--warning strong {
+  color: #f4b942;
+}
+
+.setup-flow__banner--neutral strong {
+  color: #61dafb;
+}
+
+.setup-flow__banner--success {
+  border-color: rgba(44, 182, 125, 0.42);
+  background: rgba(19, 54, 38, 0.32);
+}
+
+.setup-flow__banner--success strong {
+  color: #2cb67d;
+}
+
+.setup-flow__current {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid #243049;
+  background:
+    radial-gradient(circle at top right, rgba(97, 218, 251, 0.08), transparent 38%),
+    linear-gradient(180deg, rgba(18, 30, 47, 0.96), rgba(11, 18, 30, 0.96));
+}
+
+.setup-flow__current h3,
+.setup-flow__detail h3 {
+  margin: 0 0 8px;
+}
+
+.setup-flow__current p,
+.setup-flow__detail p {
+  margin: 0;
+  color: #c8d4e8;
+  line-height: 1.5;
+}
+
+.setup-flow__current-status {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.setup-flow__steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.setup-flow-step {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  width: 100%;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid #243049;
+  background: #101a2a;
+  color: #e6edf7;
+  text-align: left;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease,
+    transform 140ms ease,
+    opacity 140ms ease;
+}
+
+.setup-flow-step:hover {
+  border-color: rgba(97, 218, 251, 0.4);
+  transform: translateY(-1px);
+}
+
+.setup-flow-step:disabled {
+  cursor: not-allowed;
+}
+
+.setup-flow-step span {
+  font-weight: 700;
+}
+
+.setup-flow-step small {
+  color: #96a4bd;
+  line-height: 1.45;
+}
+
+.setup-flow-step__eyebrow {
+  color: #61dafb;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.setup-flow-step__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  color: #96a4bd;
+  font-size: 12px;
+}
+
+.setup-flow-step.is-active {
+  border-color: rgba(97, 218, 251, 0.8);
+  background:
+    radial-gradient(circle at top right, rgba(97, 218, 251, 0.12), transparent 38%),
+    #132235;
+  box-shadow: inset 0 0 0 1px rgba(97, 218, 251, 0.18);
+}
+
+.setup-flow-step.is-current {
+  border-color: rgba(244, 185, 66, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(244, 185, 66, 0.14);
+}
+
+.setup-flow-step.is-complete {
+  border-color: rgba(44, 182, 125, 0.6);
+  box-shadow: inset 0 0 0 1px rgba(44, 182, 125, 0.14);
+}
+
+.setup-flow-step.is-locked {
+  opacity: 0.72;
+  border-style: dashed;
+}
+
+.setup-flow__detail {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid #243049;
+  background: #0f172a;
+}
+
+.setup-flow__criteria {
+  display: grid;
+  gap: 10px;
+}
+
+.setup-flow__criteria strong {
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #96a4bd;
+}
+
+.setup-flow__criteria ul {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.setup-flow__criteria li {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 12px;
+  align-items: start;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid #243049;
+  background: #101a2a;
+  color: #c8d4e8;
+}
+
+.setup-flow__criteria li.is-met {
+  border-color: rgba(44, 182, 125, 0.52);
+  box-shadow: inset 0 0 0 1px rgba(44, 182, 125, 0.12);
+}
+
+.setup-flow__criteria li span:first-child {
+  color: #96a4bd;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.setup-flow__blocking-copy {
+  color: #f4b942;
+}
+
+.setup-flow__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.setup-flow__detail small {
+  color: #96a4bd;
+}
+
 .status-log {
   display: grid;
   gap: 10px;
@@ -180,6 +409,18 @@ select {
 }
 
 .switch-exercise-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid #243049;
+  background: #101a2a;
+}
+
+.orientation-card,
+.rc-calibration-card,
+.motor-verification-card,
+.prearm-card {
   display: grid;
   gap: 14px;
   padding: 16px;
@@ -981,6 +1222,10 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .setup-flow__steps {
+    grid-template-columns: 1fr;
+  }
+
   .rc-channel-grid,
   .telemetry-metric-grid,
   .rc-range-axis-grid,
@@ -1004,5 +1249,14 @@ select {
 
   .parameter-follow-up .button-row {
     margin-left: 0;
+  }
+
+  .setup-flow__current {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+
+  .setup-flow__criteria li {
+    grid-template-columns: 1fr;
   }
 }

@@ -91,10 +91,19 @@ export interface BatteryTelemetryState {
   lastSeenAtMs?: number
 }
 
+export interface AttitudeTelemetryState {
+  verified: boolean
+  rollDeg?: number
+  pitchDeg?: number
+  yawDeg?: number
+  lastSeenAtMs?: number
+}
+
 export interface LiveVerificationState {
   satisfiedSignals: LiveSignalId[]
   rcInput: RcInputState
   batteryTelemetry: BatteryTelemetryState
+  attitudeTelemetry: AttitudeTelemetryState
 }
 
 export interface MotorTestState {

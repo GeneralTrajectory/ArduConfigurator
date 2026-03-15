@@ -4632,6 +4632,7 @@ export function App() {
             <div className="workspace-sidebar__stack">
               <div className="button-row">
                 <select
+                  data-testid="transport-mode-select"
                   value={transportMode}
                   onChange={(event) => setTransportMode(event.target.value as TransportMode)}
                   disabled={busyAction !== undefined || snapshot.connection.kind === 'connected'}
@@ -4642,7 +4643,11 @@ export function App() {
                   </option>
                   <option value="websocket">WebSocket</option>
                 </select>
-                <select value={sessionProfile} onChange={(event) => setSessionProfile(event.target.value as SessionProfile)}>
+                <select
+                  data-testid="session-profile-select"
+                  value={sessionProfile}
+                  onChange={(event) => setSessionProfile(event.target.value as SessionProfile)}
+                >
                   <option value="full-power">Full power</option>
                   <option value="usb-bench">USB bench</option>
                 </select>
@@ -4651,6 +4656,7 @@ export function App() {
                 <label className="scoped-editor-field scoped-editor-field--compact">
                   <span>WebSocket URL</span>
                   <input
+                    data-testid="websocket-url-input"
                     type="text"
                     value={websocketUrl}
                     onChange={(event) => setWebsocketUrl(event.target.value)}
@@ -4663,6 +4669,7 @@ export function App() {
               ) : null}
 	              <div className="button-row">
 	                <button
+                    data-testid="connect-button"
 	                  style={buttonStyle('primary')}
 	                  onClick={() => void handleConnect()}
 	                  disabled={busyAction !== undefined || snapshot.connection.kind === 'connected'}
@@ -4670,6 +4677,7 @@ export function App() {
 	                  {connectButtonLabel(snapshot, parameterFollowUp)}
 	                </button>
                 <button
+                  data-testid="disconnect-button"
                   style={buttonStyle()}
                   onClick={() => void handleDisconnect()}
                   disabled={busyAction !== undefined || snapshot.connection.kind !== 'connected'}
@@ -4678,13 +4686,15 @@ export function App() {
                 </button>
               </div>
               <div className="workspace-sidebar__meta">
-                <strong>{snapshot.vehicle?.vehicle ?? 'Waiting for heartbeat'}</strong>
+                <strong data-testid="session-vehicle-name">{snapshot.vehicle?.vehicle ?? 'Waiting for heartbeat'}</strong>
                 <span>{snapshot.vehicle?.flightMode ?? 'No active mode yet'}</span>
               </div>
               <div className="config-pills">
                 <span>{snapshot.connection.kind}</span>
                 <span>{snapshot.sessionProfile === 'usb-bench' ? 'USB bench' : 'Full power'}</span>
-                <span>{snapshot.parameterStats.status === 'complete' ? `${snapshot.parameterStats.downloaded} params` : formatParameterSync(snapshot)}</span>
+                <span data-testid="session-parameter-summary">
+                  {snapshot.parameterStats.status === 'complete' ? `${snapshot.parameterStats.downloaded} params` : formatParameterSync(snapshot)}
+                </span>
                 <span>{snapshot.preArmStatus.healthy ? 'Pre-arm clear' : `${snapshot.preArmStatus.issues.length} pre-arm`}</span>
               </div>
 	              <div className="sync-meter" aria-hidden="true">
@@ -4737,7 +4747,7 @@ export function App() {
                 <div className="baseline-summary">
                   <div className="baseline-summary__header">
                     <div>
-                      <strong>{selectedSnapshot.label}</strong>
+                      <strong data-testid="active-baseline-label">{selectedSnapshot.label}</strong>
                       <small>{formatSnapshotTimestamp(selectedSnapshot.capturedAt)}</small>
                     </div>
                     <StatusBadge tone={selectedSnapshotStatusTone}>{selectedSnapshotStatusLabel}</StatusBadge>
@@ -4789,7 +4799,7 @@ export function App() {
               )}
 
               <div className="button-row">
-                <button style={buttonStyle('primary')} onClick={() => setActiveViewId('snapshots')}>
+                <button data-testid="open-snapshots-button" style={buttonStyle('primary')} onClick={() => setActiveViewId('snapshots')}>
                   {selectedSnapshot ? 'Open Snapshot Library' : 'Open Snapshots'}
                 </button>
                 {selectedSnapshotChangedEntries.length > 0 ? (
@@ -4813,6 +4823,7 @@ export function App() {
               <div className="mode-toggle" role="tablist" aria-label="Configurator product mode">
                 <button
                   type="button"
+                  data-testid="product-mode-basic"
                   className={`mode-toggle__option${productMode === 'basic' ? ' is-active' : ''}`}
                   onClick={() => setProductMode('basic')}
                 >
@@ -4821,6 +4832,7 @@ export function App() {
                 </button>
                 <button
                   type="button"
+                  data-testid="product-mode-expert"
                   className={`mode-toggle__option${productMode === 'expert' ? ' is-active' : ''}`}
                   onClick={() => setProductMode('expert')}
                 >
@@ -4861,6 +4873,7 @@ export function App() {
               <button
                 key={view.id}
                 type="button"
+                data-testid={`view-button-${view.id}`}
                 className={`workspace-nav__item${view.id === activeViewId ? ' is-active' : ''}`}
                 onClick={() => setActiveViewId(view.id)}
               >
@@ -7767,6 +7780,7 @@ export function App() {
               <label className="scoped-editor-field">
                 <span>Snapshot label</span>
                 <input
+                  data-testid="snapshot-label-input"
                   type="text"
                   value={snapshotLabelInput}
                   onChange={(event) => setSnapshotLabelInput(event.target.value)}
@@ -7778,6 +7792,7 @@ export function App() {
               <label className="scoped-editor-field">
                 <span>Tags</span>
                 <input
+                  data-testid="snapshot-tags-input"
                   type="text"
                   value={snapshotTagsInput}
                   onChange={(event) => setSnapshotTagsInput(event.target.value)}
@@ -7789,6 +7804,7 @@ export function App() {
               <label className="scoped-editor-field">
                 <span>Note</span>
                 <textarea
+                  data-testid="snapshot-note-input"
                   value={snapshotNoteInput}
                   onChange={(event) => setSnapshotNoteInput(event.target.value)}
                   placeholder="Optional context for when and why this snapshot was captured."
@@ -7800,6 +7816,7 @@ export function App() {
               <div className="snapshot-capture-actions">
                 <label className="snapshot-protected-toggle">
                   <input
+                    data-testid="snapshot-protected-toggle"
                     type="checkbox"
                     checked={snapshotProtectedInput}
                     onChange={(event) => setSnapshotProtectedInput(event.target.checked)}
@@ -7807,16 +7824,22 @@ export function App() {
                   <span>Mark as protected baseline</span>
                 </label>
                 <button
+                  data-testid="capture-live-snapshot-button"
                   style={buttonStyle('primary')}
                   onClick={handleCaptureLiveSnapshot}
                   disabled={busyAction !== undefined || snapshot.parameters.length === 0}
                 >
                   Capture Live Snapshot
                 </button>
-                <button style={buttonStyle()} onClick={handleOpenSnapshotImport} disabled={busyAction !== undefined}>
+                <button data-testid="import-snapshot-file-button" style={buttonStyle()} onClick={handleOpenSnapshotImport} disabled={busyAction !== undefined}>
                   Import Snapshot or Library
                 </button>
-                <button style={buttonStyle()} onClick={handleExportSnapshotLibrary} disabled={busyAction !== undefined || savedSnapshots.length === 0}>
+                <button
+                  data-testid="export-snapshot-library-button"
+                  style={buttonStyle()}
+                  onClick={handleExportSnapshotLibrary}
+                  disabled={busyAction !== undefined || savedSnapshots.length === 0}
+                >
                   Export Library
                 </button>
               </div>
@@ -7854,10 +7877,16 @@ export function App() {
                 )}
 
                 <div className="button-row">
-                  <button style={buttonStyle()} onClick={() => void handleOpenDesktopSnapshotFile()} disabled={busyAction !== undefined}>
+                  <button
+                    data-testid="desktop-open-snapshot-file-button"
+                    style={buttonStyle()}
+                    onClick={() => void handleOpenDesktopSnapshotFile()}
+                    disabled={busyAction !== undefined}
+                  >
                     Open from Desktop…
                   </button>
                   <button
+                    data-testid="desktop-save-snapshot-library-button"
                     style={buttonStyle()}
                     onClick={() => void handleSaveDesktopSnapshotLibrary()}
                     disabled={busyAction !== undefined || savedSnapshots.length === 0}
@@ -7865,6 +7894,7 @@ export function App() {
                     {desktopSnapshotLibraryPath ? 'Save Library' : 'Save Library to Desktop…'}
                   </button>
                   <button
+                    data-testid="desktop-export-selected-snapshot-button"
                     style={buttonStyle()}
                     onClick={() => void handleExportSelectedSnapshotToDesktop()}
                     disabled={busyAction !== undefined || !selectedSnapshot}
@@ -7928,6 +7958,7 @@ export function App() {
                     <button
                       key={savedSnapshot.id}
                       type="button"
+                      data-testid={`snapshot-card-${savedSnapshot.id}`}
                       className={`snapshot-card${isActive ? ' is-active' : ''}`}
                       onClick={() => setSelectedSnapshotId(savedSnapshot.id)}
                     >
@@ -8089,6 +8120,7 @@ export function App() {
 
                 <label className="snapshot-restore-ack">
                   <input
+                    data-testid="snapshot-restore-ack"
                     type="checkbox"
                     checked={snapshotRestoreAcknowledged}
                     onChange={(event) => setSnapshotRestoreAcknowledged(event.target.checked)}
@@ -8099,6 +8131,7 @@ export function App() {
 
                 <div className="switch-exercise-controls">
                   <button
+                    data-testid="apply-snapshot-restore-button"
                     style={buttonStyle('primary')}
                     onClick={() => void handleApplySelectedSnapshotRestore()}
                     disabled={
@@ -8440,6 +8473,7 @@ export function App() {
                           <button
                             key={preset.id}
                             type="button"
+                            data-testid={`preset-card-${preset.id}`}
                             className={`preset-card${isActive ? ' is-active' : ''}`}
                             onClick={() => setSelectedPresetId(preset.id)}
                           >
@@ -8637,6 +8671,7 @@ export function App() {
 
                 <label className="snapshot-restore-ack">
                   <input
+                    data-testid="preset-apply-ack"
                     type="checkbox"
                     checked={presetApplyAcknowledged}
                     onChange={(event) => setPresetApplyAcknowledged(event.target.checked)}
@@ -8647,6 +8682,7 @@ export function App() {
 
                 <div className="switch-exercise-controls">
                   <button
+                    data-testid="apply-preset-button"
                     style={buttonStyle('primary')}
                     onClick={() => void handleApplySelectedPreset()}
                     disabled={

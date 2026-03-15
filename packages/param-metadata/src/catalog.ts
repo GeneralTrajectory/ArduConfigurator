@@ -14,28 +14,40 @@ const DEFAULT_APP_VIEWS: AppViewDefinition[] = [
     order: 1
   },
   {
+    id: 'ports',
+    label: 'Ports',
+    description: 'Serial roles, GPS links, and peripheral setup.',
+    order: 2
+  },
+  {
     id: 'receiver',
     label: 'Receiver',
     description: 'RC mapping, ranges, and mode-switch setup.',
-    order: 2
+    order: 3
   },
   {
     id: 'outputs',
     label: 'Outputs',
     description: 'Airframe, output mapping, motor tests, and ESC review.',
-    order: 3
+    order: 4
   },
   {
     id: 'power',
     label: 'Power',
     description: 'Battery, failsafe, and pre-arm review.',
-    order: 4
+    order: 5
+  },
+  {
+    id: 'tuning',
+    label: 'Tuning',
+    description: 'Beginner-safe flight-feel and acro-rate tuning.',
+    order: 6
   },
   {
     id: 'parameters',
     label: 'Parameters',
     description: 'Low-level parameter editing, diffing, and backup work.',
-    order: 5
+    order: 7
   }
 ]
 

@@ -7,6 +7,7 @@ import {
   deriveEscSetupSummary,
   deriveOutputMappingSummary,
   deriveModeSwitchEstimate,
+  formatModeExerciseTargetLabel,
   deriveRcAxisChannelMap,
   deriveRcAxisObservations,
   deriveRcMapDraftValues,
@@ -738,10 +739,10 @@ async function runModeSwitchExercise(
 
   console.log('[runtime] read-only exercise: mode-switch')
   console.log(
-    `[runtime] exercise targets: ${state.targetSlots.map((slot) => formatModeSlotLabel(initialSnapshot, slot)).join(', ')}`
+    `[runtime] exercise targets: ${state.targetSlots.map((slot) => formatModeExerciseTargetLabel(initialSnapshot, slot)).join(', ')}`
   )
   if (state.currentTargetSlot !== undefined) {
-    console.log(`[runtime] exercise step: move the switch to ${formatModeSlotLabel(initialSnapshot, state.currentTargetSlot)}`)
+    console.log(`[runtime] exercise step: move the configured flight-mode control to ${formatModeExerciseTargetLabel(initialSnapshot, state.currentTargetSlot)}`)
   }
 
   const deadline = Date.now() + timeoutMs
@@ -754,7 +755,7 @@ async function runModeSwitchExercise(
     if (state.visitedSlots.length > previous.visitedSlots.length) {
       const visited = state.visitedSlots.filter((slot) => !previous.visitedSlots.includes(slot))
       visited.forEach((slot) => {
-        console.log(`[runtime] exercise progress: observed ${formatModeSlotLabel(runtime.getSnapshot(), slot)}`)
+        console.log(`[runtime] exercise progress: observed ${formatModeExerciseTargetLabel(runtime.getSnapshot(), slot)}`)
       })
     }
 
@@ -766,7 +767,9 @@ async function runModeSwitchExercise(
     }
 
     if (state.currentTargetSlot !== previous.currentTargetSlot && state.currentTargetSlot !== undefined) {
-      console.log(`[runtime] exercise step: move the switch to ${formatModeSlotLabel(runtime.getSnapshot(), state.currentTargetSlot)}`)
+      console.log(
+        `[runtime] exercise step: move the configured flight-mode control to ${formatModeExerciseTargetLabel(runtime.getSnapshot(), state.currentTargetSlot)}`
+      )
     }
 
     previous = state
@@ -775,7 +778,7 @@ async function runModeSwitchExercise(
   if (state.status === 'running') {
     state = failModeSwitchExerciseState(
       state,
-      `Timed out after ${timeoutMs}ms waiting for ${formatModeSlotLabel(runtime.getSnapshot(), state.currentTargetSlot)}.`
+      `Timed out after ${timeoutMs}ms waiting for ${formatModeExerciseTargetLabel(runtime.getSnapshot(), state.currentTargetSlot)}.`
     )
   }
 

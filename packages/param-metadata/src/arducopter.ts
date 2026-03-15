@@ -4,7 +4,11 @@ import {
   ARDUCOPTER_FLIGHT_MODE_LABELS,
   ARDUCOPTER_FRAME_CLASS_LABELS,
   ARDUCOPTER_FRAME_TYPE_LABELS,
+  ARDUCOPTER_GPS_TYPE_LABELS,
   ARDUCOPTER_MOT_PWM_TYPE_LABELS,
+  ARDUCOPTER_SERIAL_BAUD_LABELS,
+  ARDUCOPTER_SERIAL_PROTOCOL_LABELS,
+  ARDUCOPTER_SERIAL_RTSCTS_LABELS,
   ARDUCOPTER_SERVO_FUNCTION_LABELS,
   ARDUCOPTER_THROTTLE_FAILSAFE_LABELS,
 } from './arducopter-enums.js'
@@ -23,6 +27,44 @@ const rcMapNotes = [
   'After changing RC mapping, repeat RC endpoint capture before flight.'
 ]
 
+const serialProtocolNotes = [
+  'Changing a serial port protocol usually requires a reboot before the new port role is fully applied.',
+  'After changing a port role, reconnect the peripheral and verify telemetry before flight.'
+]
+
+const serialBaudNotes = [
+  'Baud-rate changes should be matched to the connected peripheral before reconnecting.'
+]
+
+const serialFlowControlNotes = [
+  'Only enable RTS/CTS flow control if the connected peripheral and wiring support it.'
+]
+
+const flightFeelNotes = [
+  'Make small changes, fly-test, and keep a known-good backup before pushing responsiveness further.',
+  'These controls are intended to stay beginner-safe; use Expert mode for deeper controller tuning.'
+]
+
+const acroRateNotes = [
+  'Rates and expo are best adjusted a little at a time, with a short hover or line-of-sight test between changes.',
+  'This first tuning surface intentionally stops at rates and expo so the setup workflow stays approachable.'
+]
+
+function serialPortDisplayName(portNumber: number): string {
+  switch (portNumber) {
+    case 0:
+      return 'USB / Console'
+    case 1:
+      return 'Telemetry 1'
+    case 2:
+      return 'Telemetry 2'
+    case 3:
+      return 'GPS / UART3'
+    default:
+      return `Serial ${portNumber}`
+  }
+}
+
 function enumOptions(labelMap: Record<number, string>): ParameterValueOption[] {
   return Object.entries(labelMap)
     .map(([value, label]) => ({
@@ -30,6 +72,53 @@ function enumOptions(labelMap: Record<number, string>): ParameterValueOption[] {
       label
     }))
     .sort((left, right) => left.value - right.value)
+}
+
+function buildSerialPortParameterDefinitions(maxPortNumber: number): FirmwareMetadataBundle['parameters'] {
+  const definitions: FirmwareMetadataBundle['parameters'] = {}
+
+  for (let portNumber = 0; portNumber <= maxPortNumber; portNumber += 1) {
+    const portLabel = serialPortDisplayName(portNumber)
+
+    definitions[`SERIAL${portNumber}_PROTOCOL`] = {
+      id: `SERIAL${portNumber}_PROTOCOL`,
+      label: `${portLabel} Protocol`,
+      description: `Assigned serial protocol for ${portLabel}.`,
+      category: 'ports',
+      minimum: -1,
+      maximum: 50,
+      rebootRequired: true,
+      notes: serialProtocolNotes,
+      options: enumOptions(ARDUCOPTER_SERIAL_PROTOCOL_LABELS)
+    }
+
+    definitions[`SERIAL${portNumber}_BAUD`] = {
+      id: `SERIAL${portNumber}_BAUD`,
+      label: `${portLabel} Baud`,
+      description: `Configured baud rate for ${portLabel}.`,
+      category: 'ports',
+      minimum: 1,
+      maximum: 2000,
+      notes: serialBaudNotes,
+      options: enumOptions(ARDUCOPTER_SERIAL_BAUD_LABELS)
+    }
+
+    if (portNumber > 0 && portNumber <= 6) {
+      definitions[`BRD_SER${portNumber}_RTSCTS`] = {
+        id: `BRD_SER${portNumber}_RTSCTS`,
+        label: `${portLabel} Flow Control`,
+        description: `RTS/CTS flow-control behavior for ${portLabel}.`,
+        category: 'ports',
+        minimum: 0,
+        maximum: 3,
+        rebootRequired: true,
+        notes: serialFlowControlNotes,
+        options: enumOptions(ARDUCOPTER_SERIAL_RTSCTS_LABELS)
+      }
+    }
+  }
+
+  return definitions
 }
 
 export const arducopterMetadata: FirmwareMetadataBundle = {
@@ -42,28 +131,40 @@ export const arducopterMetadata: FirmwareMetadataBundle = {
       order: 1
     },
     {
+      id: 'ports',
+      label: 'Ports',
+      description: 'Serial roles, GPS links, and peripheral setup.',
+      order: 2
+    },
+    {
       id: 'receiver',
       label: 'Receiver',
       description: 'RC mapping, ranges, and flight modes.',
-      order: 2
+      order: 3
     },
     {
       id: 'outputs',
       label: 'Outputs',
       description: 'Airframe, outputs, motor tests, and ESC review.',
-      order: 3
+      order: 4
     },
     {
       id: 'power',
       label: 'Power',
       description: 'Battery, failsafe, and pre-arm review.',
-      order: 4
+      order: 5
+    },
+    {
+      id: 'tuning',
+      label: 'Tuning',
+      description: 'Beginner-safe flight-feel and acro-rate tuning.',
+      order: 6
     },
     {
       id: 'parameters',
       label: 'Parameters',
       description: 'Low-level parameter editing and backup work.',
-      order: 5
+      order: 7
     }
   ],
   categories: {
@@ -81,40 +182,68 @@ export const arducopterMetadata: FirmwareMetadataBundle = {
       order: 2,
       viewId: 'setup'
     },
+    ports: {
+      id: 'ports',
+      label: 'Ports',
+      description: 'Serial roles, baud rates, and peripheral transport settings.',
+      order: 3,
+      viewId: 'ports'
+    },
+    peripherals: {
+      id: 'peripherals',
+      label: 'Peripherals',
+      description: 'GPS and other externally attached peripherals.',
+      order: 4,
+      viewId: 'ports'
+    },
     radio: {
       id: 'radio',
       label: 'Receiver',
       description: 'RC mapping, ranges, and calibration values.',
-      order: 3,
+      order: 5,
       viewId: 'receiver'
     },
     modes: {
       id: 'modes',
       label: 'Modes',
       description: 'Flight-mode assignments and switch setup.',
-      order: 4,
+      order: 6,
       viewId: 'receiver'
     },
     outputs: {
       id: 'outputs',
       label: 'Outputs',
       description: 'Motor, servo, and propulsion-related outputs.',
-      order: 5,
+      order: 7,
       viewId: 'outputs'
     },
     power: {
       id: 'power',
       label: 'Power',
       description: 'Battery sensing and power monitoring.',
-      order: 6,
+      order: 8,
       viewId: 'power'
     },
     failsafe: {
       id: 'failsafe',
       label: 'Failsafe',
       description: 'Throttle, battery, and failsafe behavior.',
-      order: 7,
+      order: 9,
       viewId: 'power'
+    },
+    tuning: {
+      id: 'tuning',
+      label: 'Flight Feel',
+      description: 'Simple multirotor handling adjustments for angle mode and general stick feel.',
+      order: 10,
+      viewId: 'tuning'
+    },
+    acro: {
+      id: 'acro',
+      label: 'Acro Rates',
+      description: 'Acro roll, pitch, and yaw rates plus expo.',
+      order: 11,
+      viewId: 'tuning'
     }
   },
   parameters: {
@@ -156,6 +285,29 @@ export const arducopterMetadata: FirmwareMetadataBundle = {
       maximum: 1,
       options: enabledDisabledOptions
     },
+    ...buildSerialPortParameterDefinitions(6),
+    GPS_TYPE: {
+      id: 'GPS_TYPE',
+      label: 'Primary GPS Type',
+      description: 'Driver type used for the primary GPS/peripheral input.',
+      category: 'peripherals',
+      minimum: 0,
+      maximum: 25,
+      rebootRequired: true,
+      notes: ['After changing GPS driver types, reconnect the sensor and verify lock/telemetry before flight.'],
+      options: enumOptions(ARDUCOPTER_GPS_TYPE_LABELS)
+    },
+    GPS_TYPE2: {
+      id: 'GPS_TYPE2',
+      label: 'Secondary GPS Type',
+      description: 'Driver type used for the secondary GPS/peripheral input.',
+      category: 'peripherals',
+      minimum: 0,
+      maximum: 25,
+      rebootRequired: true,
+      notes: ['Disable this if no secondary GPS is attached. Reboot after changes before verifying redundancy.'],
+      options: enumOptions(ARDUCOPTER_GPS_TYPE_LABELS)
+    },
     BATT_MONITOR: {
       id: 'BATT_MONITOR',
       label: 'Battery Monitor',
@@ -183,6 +335,49 @@ export const arducopterMetadata: FirmwareMetadataBundle = {
       maximum: 7,
       options: enumOptions(ARDUCOPTER_BATTERY_FAILSAFE_ACTION_LABELS)
     },
+    ATC_INPUT_TC: {
+      id: 'ATC_INPUT_TC',
+      label: 'Stick Feel Smoothing',
+      description: 'Input shaping time constant for roll and pitch demand. Lower values feel crisper; higher values feel softer.',
+      category: 'tuning',
+      unit: 's',
+      minimum: 0,
+      maximum: 1,
+      step: 0.01,
+      notes: flightFeelNotes
+    },
+    ANGLE_MAX: {
+      id: 'ANGLE_MAX',
+      label: 'Max Lean Angle',
+      description: 'Maximum commanded lean angle in self-leveling modes.',
+      category: 'tuning',
+      unit: 'cdeg',
+      minimum: 1000,
+      maximum: 8000,
+      step: 100,
+      notes: ['This value is stored in centidegrees. A value of 4500 means 45 degrees of maximum lean.', ...flightFeelNotes]
+    },
+    PILOT_Y_RATE: {
+      id: 'PILOT_Y_RATE',
+      label: 'Yaw Rate',
+      description: 'Maximum yaw rate command used for pilot input outside acro tuning.',
+      category: 'tuning',
+      unit: 'deg/s',
+      minimum: 1,
+      maximum: 500,
+      step: 1,
+      notes: flightFeelNotes
+    },
+    PILOT_Y_EXPO: {
+      id: 'PILOT_Y_EXPO',
+      label: 'Yaw Expo',
+      description: 'Softens yaw response near center stick while preserving full authority at the ends.',
+      category: 'tuning',
+      minimum: 0,
+      maximum: 1,
+      step: 0.01,
+      notes: flightFeelNotes
+    },
     FLTMODE1: {
       id: 'FLTMODE1',
       label: 'Flight Mode 1',
@@ -201,6 +396,27 @@ export const arducopterMetadata: FirmwareMetadataBundle = {
       id: 'FLTMODE3',
       label: 'Flight Mode 3',
       description: 'Mode assigned to the third switch position.',
+      category: 'modes',
+      options: enumOptions(ARDUCOPTER_FLIGHT_MODE_LABELS)
+    },
+    FLTMODE4: {
+      id: 'FLTMODE4',
+      label: 'Flight Mode 4',
+      description: 'Mode assigned to the fourth switch position.',
+      category: 'modes',
+      options: enumOptions(ARDUCOPTER_FLIGHT_MODE_LABELS)
+    },
+    FLTMODE5: {
+      id: 'FLTMODE5',
+      label: 'Flight Mode 5',
+      description: 'Mode assigned to the fifth switch position.',
+      category: 'modes',
+      options: enumOptions(ARDUCOPTER_FLIGHT_MODE_LABELS)
+    },
+    FLTMODE6: {
+      id: 'FLTMODE6',
+      label: 'Flight Mode 6',
+      description: 'Mode assigned to the sixth switch position.',
       category: 'modes',
       options: enumOptions(ARDUCOPTER_FLIGHT_MODE_LABELS)
     },
@@ -376,6 +592,48 @@ export const arducopterMetadata: FirmwareMetadataBundle = {
       maximum: 2200,
       step: 1,
       notes: rcEndpointNotes
+    },
+    ACRO_RP_RATE: {
+      id: 'ACRO_RP_RATE',
+      label: 'Acro Roll/Pitch Rate',
+      description: 'Maximum roll and pitch rate used in Acro mode.',
+      category: 'acro',
+      unit: 'deg/s',
+      minimum: 1,
+      maximum: 1080,
+      step: 1,
+      notes: acroRateNotes
+    },
+    ACRO_Y_RATE: {
+      id: 'ACRO_Y_RATE',
+      label: 'Acro Yaw Rate',
+      description: 'Maximum yaw rate used in Acro mode.',
+      category: 'acro',
+      unit: 'deg/s',
+      minimum: 1,
+      maximum: 1080,
+      step: 1,
+      notes: acroRateNotes
+    },
+    ACRO_RP_EXPO: {
+      id: 'ACRO_RP_EXPO',
+      label: 'Acro Roll/Pitch Expo',
+      description: 'Softens roll and pitch response near center stick in Acro mode.',
+      category: 'acro',
+      minimum: 0,
+      maximum: 1,
+      step: 0.01,
+      notes: acroRateNotes
+    },
+    ACRO_Y_EXPO: {
+      id: 'ACRO_Y_EXPO',
+      label: 'Acro Yaw Expo',
+      description: 'Softens yaw response near center stick in Acro mode.',
+      category: 'acro',
+      minimum: 0,
+      maximum: 1,
+      step: 0.01,
+      notes: acroRateNotes
     },
     MOT_PWM_TYPE: {
       id: 'MOT_PWM_TYPE',

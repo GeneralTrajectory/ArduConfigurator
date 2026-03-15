@@ -3,7 +3,9 @@ import test from 'node:test'
 
 import {
   ArduPilotConfiguratorRuntime,
+  createModeSwitchExerciseState,
   deriveEscSetupSummary,
+  deriveModeExerciseAssignments,
   deriveRcMapDraftValues,
   detectDominantRcChannelChange
 } from '../packages/ardupilot-core/dist/index.js'
@@ -91,6 +93,35 @@ test('deriveEscSetupSummary classifies digital motor protocols', () => {
 
   assert.equal(summary.calibrationPath, 'digital-protocol')
   assert.ok(summary.notes.some((note) => note.includes('Digital motor protocols')))
+})
+
+test('mode-switch exercise targets distinct configured flight-mode positions, not every FLTMODEn slot', () => {
+  const snapshot = createSnapshot({
+    FLTMODE1: 0,
+    FLTMODE2: 0,
+    FLTMODE3: 0,
+    FLTMODE4: 2,
+    FLTMODE5: 0,
+    FLTMODE6: 16,
+    FLTMODE_CH: 7
+  })
+
+  snapshot.liveVerification.rcInput = {
+    verified: true,
+    channelCount: 8,
+    channels: [1500, 1500, 1000, 1500, 1500, 1500, 1000, 1500]
+  }
+
+  const assignments = deriveModeExerciseAssignments(snapshot)
+  assert.deepEqual(
+    assignments.map((assignment) => assignment.slot),
+    [1, 4, 6]
+  )
+
+  const state = createModeSwitchExerciseState(snapshot)
+  assert.equal(state.status, 'running')
+  assert.deepEqual(state.targetSlots, [1, 4, 6])
+  assert.equal(state.currentTargetSlot, 1)
 })
 
 function createSnapshot(parameterValues) {

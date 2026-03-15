@@ -99,6 +99,110 @@ export const ARDUCOPTER_MOT_PWM_TYPE_LABELS: Record<number, string> = {
   8: 'PWMRange'
 }
 
+export const ARDUCOPTER_SERIAL_PROTOCOL_LABELS: Record<number, string> = {
+  [-1]: 'None',
+  1: 'MAVLink1',
+  2: 'MAVLink2',
+  3: 'FrSky D',
+  4: 'FrSky SPort',
+  5: 'GPS',
+  7: 'AlexMos Gimbal',
+  8: 'SToRM32 Gimbal',
+  9: 'Lidar',
+  10: 'FrSky Passthrough',
+  13: 'Beacon',
+  14: 'Volz',
+  15: 'SBUS Servo Out',
+  16: 'ESC Telemetry',
+  17: 'Devo Telemetry',
+  18: 'OpticalFlow',
+  19: 'Robotis',
+  20: 'MSP',
+  21: 'IMU MSP',
+  22: 'DisplayPort',
+  23: 'CRSF',
+  24: 'FrSky FPort',
+  25: 'FrSky SPort',
+  26: 'LTM',
+  27: 'RunCam',
+  28: 'HOTT',
+  29: 'Scripting',
+  30: 'Crossfire VTX',
+  31: 'Generator',
+  32: 'Winch',
+  33: 'SBus Servo In',
+  34: 'DJI FPV',
+  35: 'Airspeed',
+  36: 'ADSB',
+  37: 'AHRS',
+  38: 'SmartAudio',
+  39: 'FrSky SPort With Passthrough',
+  40: 'IRC Tramp',
+  41: 'RangeFinder',
+  42: 'Vision Position',
+  43: 'Audio VTX',
+  44: 'HoTT Telemetry',
+  45: 'DDS XRCE',
+  46: 'IMU Data',
+  48: 'PPP',
+  49: 'i-BUS Telemetry',
+  50: 'IOMCU'
+}
+
+export const ARDUCOPTER_SERIAL_BAUD_LABELS: Record<number, string> = {
+  1: '1,200',
+  2: '2,400',
+  4: '4,800',
+  9: '9,600',
+  19: '19,200',
+  38: '38,400',
+  57: '57,600',
+  111: '111,100',
+  115: '115,200',
+  230: '230,400',
+  256: '256,000',
+  460: '460,800',
+  500: '500,000',
+  921: '921,600',
+  1500: '1,500,000',
+  2000: '2,000,000'
+}
+
+export const ARDUCOPTER_SERIAL_RTSCTS_LABELS: Record<number, string> = {
+  0: 'Disabled',
+  1: 'Enabled',
+  2: 'Auto',
+  3: 'RS-485 RTS'
+}
+
+export const ARDUCOPTER_GPS_TYPE_LABELS: Record<number, string> = {
+  0: 'None',
+  1: 'Auto',
+  2: 'u-blox',
+  3: 'SBF',
+  4: 'GSOF',
+  5: 'NMEA',
+  6: 'SiRF',
+  7: 'HIL',
+  8: 'SwiftNav',
+  9: 'DroneCAN',
+  10: 'MAV',
+  11: 'ERB',
+  13: 'Nova',
+  14: 'Hemisphere NMEA',
+  15: 'u-blox Moving Baseline Base',
+  16: 'u-blox Moving Baseline Rover',
+  17: 'MSP',
+  18: 'AllyStar',
+  19: 'ExternalAHRS',
+  20: 'NMEA Unicore',
+  21: 'Rover Moving Baseline Base',
+  22: 'Rover Moving Baseline Rover',
+  23: 'Septentrio',
+  24: 'Unicore Moving Baseline Base',
+  25: 'Unicore Moving Baseline Rover'
+}
+
 export const ARDUCOPTER_SERVO_FUNCTION_LABELS: Record<number, string> = {
   [-1]: 'GPIO',
   0: 'Disabled',
@@ -265,6 +369,55 @@ export function arducopterMotorPwmTypeLabel(value: number | undefined): string |
 
 export function formatArducopterMotorPwmType(value: number | undefined): string {
   return arducopterMotorPwmTypeLabel(value) ?? (value === undefined ? 'Unknown' : `PWM type ${value}`)
+}
+
+export function arducopterSerialProtocolLabel(value: number | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined
+  }
+
+  return ARDUCOPTER_SERIAL_PROTOCOL_LABELS[value]
+}
+
+export function formatArducopterSerialProtocol(value: number | undefined): string {
+  return arducopterSerialProtocolLabel(value) ?? (value === undefined ? 'Unknown' : `Protocol ${value}`)
+}
+
+export function arducopterSerialBaudLabel(value: number | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined
+  }
+
+  return ARDUCOPTER_SERIAL_BAUD_LABELS[value]
+}
+
+export function formatArducopterSerialBaud(value: number | undefined): string {
+  const label = arducopterSerialBaudLabel(value)
+  return label ? `${label} baud` : value === undefined ? 'Unknown' : `${value} baud`
+}
+
+export function arducopterSerialRtsctsLabel(value: number | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined
+  }
+
+  return ARDUCOPTER_SERIAL_RTSCTS_LABELS[value]
+}
+
+export function formatArducopterSerialRtscts(value: number | undefined): string {
+  return arducopterSerialRtsctsLabel(value) ?? (value === undefined ? 'Unknown' : `Flow ${value}`)
+}
+
+export function arducopterGpsTypeLabel(value: number | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined
+  }
+
+  return ARDUCOPTER_GPS_TYPE_LABELS[value]
+}
+
+export function formatArducopterGpsType(value: number | undefined): string {
+  return arducopterGpsTypeLabel(value) ?? (value === undefined ? 'Unknown' : `GPS ${value}`)
 }
 
 export function arducopterMotorNumberForServoFunction(value: number | undefined): number | undefined {

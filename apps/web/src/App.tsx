@@ -1,4 +1,4 @@
-import type { ChangeEvent } from 'react'
+import type { ChangeEvent, Dispatch, SetStateAction } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
@@ -15,6 +15,7 @@ import {
   deriveEscSetupSummary,
   deriveDraftValuesFromParameterBackup,
   deriveArducopterAirframe,
+  deriveModeExerciseAssignments,
   deriveParameterDraftEntries,
   deriveModeAssignments,
   deriveModeSwitchEstimate,
@@ -26,6 +27,7 @@ import {
   evaluateMotorTestEligibility,
   failModeSwitchExerciseState,
   failRcRangeExerciseState,
+  formatModeExerciseTargetLabel,
   formatModeSlotLabel,
   formatRcAxisLabel,
   groupParameterDraftEntries,
@@ -46,6 +48,10 @@ import {
   arducopterMetadata,
   formatArducopterBatteryFailsafeAction,
   formatArducopterFlightMode,
+  formatArducopterGpsType,
+  formatArducopterSerialBaud,
+  formatArducopterSerialProtocol,
+  formatArducopterSerialRtscts,
   formatArducopterThrottleFailsafe,
   normalizeFirmwareMetadata,
   type AppViewId,
@@ -64,9 +70,17 @@ const actionLabels = {
   'reboot-autopilot': 'Request Reboot'
 } as const
 
+const OUTPUT_REVIEW_PARAM_IDS = ['MOT_PWM_TYPE', 'MOT_PWM_MIN', 'MOT_PWM_MAX', 'MOT_SPIN_ARM', 'MOT_SPIN_MIN', 'MOT_SPIN_MAX'] as const
+const TUNING_FLIGHT_FEEL_PARAM_IDS = ['ATC_INPUT_TC', 'ANGLE_MAX', 'PILOT_Y_RATE', 'PILOT_Y_EXPO'] as const
+const TUNING_ACRO_PARAM_IDS = ['ACRO_RP_RATE', 'ACRO_Y_RATE', 'ACRO_RP_EXPO', 'ACRO_Y_EXPO'] as const
+const TUNING_PARAM_IDS = [...TUNING_FLIGHT_FEEL_PARAM_IDS, ...TUNING_ACRO_PARAM_IDS] as const
+
 type TransportMode = 'demo' | 'web-serial'
+type ProductMode = 'basic' | 'expert'
 type StatusTone = 'neutral' | 'success' | 'warning' | 'danger'
 type ModeSwitchExerciseStatus = 'idle' | 'running' | 'passed' | 'failed'
+
+const PRODUCT_MODE_STORAGE_KEY = 'arduconfig:product-mode'
 
 interface AppViewDescriptor {
   id: AppViewId
@@ -91,6 +105,29 @@ interface ModeSwitchActivity {
   previousPwm?: number
   currentPwm: number
   changedAtMs: number
+}
+
+interface SerialPortViewModel {
+  portNumber: number
+  label: string
+  protocolParameter?: ParameterState
+  baudParameter?: ParameterState
+  flowControlParameter?: ParameterState
+  protocolValue?: number
+  baudValue?: number
+  flowControlValue?: number
+  protocolLabel: string
+  baudLabel: string
+  flowControlLabel?: string
+  usageSummary: string
+  notes: string[]
+  editable: boolean
+}
+
+interface GpsPeripheralViewModel {
+  label: string
+  parameter?: ParameterState
+  value?: number
 }
 
 interface ModeSwitchExerciseState {
@@ -500,7 +537,7 @@ function escCalibrationInstructions(escSetup: ReturnType<typeof deriveEscSetupSu
 function panelAnchorForSetupSection(sectionId: string): { panelId: string; panelLabel: string } {
   switch (sectionId) {
     case 'link':
-      return { panelId: 'setup-panel-link', panelLabel: 'Connection' }
+      return { panelId: 'setup-panel-link', panelLabel: 'Vehicle Link' }
     case 'airframe':
     case 'outputs':
       return { panelId: 'setup-panel-outputs', panelLabel: 'Airframe & Outputs' }
@@ -523,6 +560,8 @@ function appViewForPanel(panelId: string): AppViewId {
     case 'setup-panel-link':
     case 'setup-panel-guided':
       return 'setup'
+    case 'setup-panel-ports':
+      return 'ports'
     case 'setup-panel-rc':
       return 'receiver'
     case 'setup-panel-outputs':
@@ -712,6 +751,27 @@ function guidedActionButtonLabel(
   }
 }
 
+function connectButtonLabel(snapshot: ConfiguratorSnapshot, parameterFollowUp: ParameterFollowUp | undefined): string {
+  if (snapshot.connection.kind === 'error' || parameterFollowUp !== undefined || snapshot.vehicle !== undefined) {
+    return 'Reconnect'
+  }
+
+  return 'Connect'
+}
+
+function isExpertOnlyView(viewId: AppViewId): boolean {
+  return viewId === 'parameters'
+}
+
+function readStoredProductMode(): ProductMode {
+  if (typeof window === 'undefined') {
+    return 'basic'
+  }
+
+  const stored = window.sessionStorage.getItem(PRODUCT_MODE_STORAGE_KEY)
+  return stored === 'expert' ? 'expert' : 'basic'
+}
+
 function readParameterValue(snapshot: ConfiguratorSnapshot, paramId: string): number | undefined {
   return snapshot.parameters.find((parameter) => parameter.id === paramId)?.value
 }
@@ -812,6 +872,134 @@ function toneForParameterDraftStatus(status: ParameterDraftStatus): StatusTone {
     default:
       return 'neutral'
   }
+}
+
+function toneForScopedDraftReview(stagedCount: number, invalidCount: number): StatusTone {
+  if (invalidCount > 0) {
+    return 'danger'
+  }
+  if (stagedCount > 0) {
+    return 'warning'
+  }
+  return 'success'
+}
+
+function isReceiverReviewParamId(paramId: string): boolean {
+  return paramId.startsWith('RCMAP_') || /^RC\d+_(MIN|MAX|TRIM)$/.test(paramId) || /^FLTMODE\d+$/.test(paramId)
+}
+
+function isPortsReviewParamId(paramId: string): boolean {
+  return /^SERIAL\d+_(PROTOCOL|BAUD)$/.test(paramId) || /^BRD_SER\d+_RTSCTS$/.test(paramId) || /^GPS_TYPE2?$/.test(paramId)
+}
+
+function isTuningReviewParamId(paramId: string): boolean {
+  return TUNING_PARAM_IDS.includes(paramId as (typeof TUNING_PARAM_IDS)[number])
+}
+
+function serialPortDisplayName(portNumber: number): string {
+  switch (portNumber) {
+    case 0:
+      return 'USB / Console'
+    case 1:
+      return 'Telemetry 1'
+    case 2:
+      return 'Telemetry 2'
+    case 3:
+      return 'GPS / UART3'
+    default:
+      return `Serial ${portNumber}`
+  }
+}
+
+function describeSerialPortUsage(protocolValue: number | undefined): string {
+  switch (protocolValue) {
+    case -1:
+      return 'Disabled in the current configuration.'
+    case 1:
+    case 2:
+      return 'Telemetry / companion link.'
+    case 5:
+      return 'GPS or GNSS receiver.'
+    case 16:
+      return 'ESC telemetry input.'
+    case 20:
+    case 21:
+      return 'MSP peripheral or sensor link.'
+    case 22:
+      return 'DisplayPort OSD / display peripheral.'
+    case 23:
+    case 24:
+    case 33:
+      return 'Serial receiver / RC input path.'
+    case 30:
+    case 38:
+    case 40:
+    case 43:
+      return 'VTX control or related video peripheral.'
+    case 36:
+      return 'ADS-B receiver input.'
+    case 41:
+      return 'Rangefinder or similar distance peripheral.'
+    default:
+      return 'Peripheral or accessory link.'
+  }
+}
+
+function buildSerialPortViewModels(snapshot: ConfiguratorSnapshot): SerialPortViewModel[] {
+  const parameterById = new Map(snapshot.parameters.map((parameter) => [parameter.id, parameter]))
+  const portNumbers = [...new Set(
+    snapshot.parameters
+      .map((parameter) => {
+        const match = parameter.id.match(/^SERIAL(\d+)_(PROTOCOL|BAUD)$/)
+        return match ? Number(match[1]) : undefined
+      })
+      .filter((portNumber): portNumber is number => portNumber !== undefined)
+  )].sort((left, right) => left - right)
+
+  return portNumbers.map((portNumber) => {
+    const protocolParameter = parameterById.get(`SERIAL${portNumber}_PROTOCOL`)
+    const baudParameter = parameterById.get(`SERIAL${portNumber}_BAUD`)
+    const flowControlParameter = portNumber > 0 ? parameterById.get(`BRD_SER${portNumber}_RTSCTS`) : undefined
+    const protocolValue = protocolParameter?.value
+    const baudValue = baudParameter?.value
+    const flowControlValue = flowControlParameter?.value
+
+    const notes = portNumber === 0
+      ? ['USB / console is shown for awareness. Leave it on MAVLink unless there is a specific board-level reason to change it.']
+      : []
+
+    return {
+      portNumber,
+      label: serialPortDisplayName(portNumber),
+      protocolParameter,
+      baudParameter,
+      flowControlParameter,
+      protocolValue,
+      baudValue,
+      flowControlValue,
+      protocolLabel: formatArducopterSerialProtocol(protocolValue),
+      baudLabel: formatArducopterSerialBaud(baudValue),
+      flowControlLabel: flowControlParameter ? formatArducopterSerialRtscts(flowControlValue) : undefined,
+      usageSummary: describeSerialPortUsage(protocolValue),
+      notes,
+      editable: portNumber !== 0 && protocolParameter !== undefined && baudParameter !== undefined
+    }
+  })
+}
+
+function buildGpsPeripheralViewModels(snapshot: ConfiguratorSnapshot): GpsPeripheralViewModel[] {
+  return [
+    {
+      label: 'Primary GPS',
+      parameter: snapshot.parameters.find((parameter) => parameter.id === 'GPS_TYPE'),
+      value: readRoundedParameter(snapshot, 'GPS_TYPE')
+    },
+    {
+      label: 'Secondary GPS',
+      parameter: snapshot.parameters.find((parameter) => parameter.id === 'GPS_TYPE2'),
+      value: readRoundedParameter(snapshot, 'GPS_TYPE2')
+    }
+  ].filter((peripheral) => peripheral.parameter !== undefined)
 }
 
 function toneForOutputKind(kind: ServoOutputKind): StatusTone {
@@ -977,6 +1165,47 @@ function formatParameterStep(definition: ParameterDefinition | undefined): strin
   return definition.unit ? `${definition.step} ${definition.unit}` : String(definition.step)
 }
 
+function formatAngleMaxDegrees(rawValue: number | undefined): string {
+  if (rawValue === undefined || !Number.isFinite(rawValue)) {
+    return 'Unknown'
+  }
+
+  return `${Math.round(rawValue / 100)} deg`
+}
+
+function tuningInputValue(parameter: ParameterState, editedValues: Record<string, string>): string {
+  const rawValue = editedValues[parameter.id]
+  if (parameter.id === 'ANGLE_MAX') {
+    if (rawValue === undefined) {
+      return String(Math.round(parameter.value / 100))
+    }
+
+    const parsed = Number(rawValue)
+    return Number.isFinite(parsed) ? String(Math.round(parsed / 100)) : ''
+  }
+
+  return rawValue ?? String(parameter.value)
+}
+
+function stageTuningInputValue(
+  parameter: ParameterState,
+  nextValue: string,
+  setEditedValues: Dispatch<SetStateAction<Record<string, string>>>
+): void {
+  if (parameter.id === 'ANGLE_MAX') {
+    setEditedValues((existing) => ({
+      ...existing,
+      [parameter.id]: nextValue.trim().length === 0 ? '' : String(Math.round(Number(nextValue) * 100))
+    }))
+    return
+  }
+
+  setEditedValues((existing) => ({
+    ...existing,
+    [parameter.id]: nextValue
+  }))
+}
+
 function buildParameterBackupFilename(snapshot: ConfiguratorSnapshot): string {
   const vehicleLabel = snapshot.vehicle?.vehicle?.toLowerCase() ?? 'vehicle'
   const dateLabel = new Date().toISOString().replace(/[:]/g, '-').replace(/\..+$/, '')
@@ -997,6 +1226,7 @@ export function App() {
   const metadataCatalog = useMemo(() => normalizeFirmwareMetadata(arducopterMetadata), [])
   const [transportMode, setTransportMode] = useState<TransportMode>('demo')
   const [sessionProfile, setSessionProfile] = useState<SessionProfile>('full-power')
+  const [productMode, setProductMode] = useState<ProductMode>(readStoredProductMode)
   const [activeViewId, setActiveViewId] = useState<AppViewId>('setup')
   const runtime = useMemo(() => createRuntime(transportMode), [transportMode])
   const [snapshot, setSnapshot] = useState<ConfiguratorSnapshot>(runtime.getSnapshot())
@@ -1027,6 +1257,7 @@ export function App() {
   const rcChannelDisplays = buildRcChannelDisplays(snapshot)
   const airframe = deriveArducopterAirframe(snapshot)
   const modeAssignments = deriveModeAssignments(snapshot)
+  const modeExerciseAssignments = deriveModeExerciseAssignments(snapshot)
   const modeSwitchEstimate = deriveModeSwitchEstimate(snapshot)
   const outputMapping = deriveOutputMappingSummary(snapshot)
   const escSetup = deriveEscSetupSummary(snapshot)
@@ -1062,7 +1293,7 @@ export function App() {
   const canRunModeSwitchExercise =
     snapshot.connection.kind === 'connected' &&
     snapshot.liveVerification.rcInput.verified &&
-    modeAssignments.length >= 2 &&
+    modeExerciseAssignments.length >= 2 &&
     modeSwitchEstimate.channelNumber !== undefined
   const canRunRcRangeExercise = snapshot.connection.kind === 'connected' && snapshot.liveVerification.rcInput.verified
   const canRunRcMappingExercise = snapshot.connection.kind === 'connected' && snapshot.liveVerification.rcInput.verified
@@ -1268,6 +1499,54 @@ export function App() {
     () => parameterDraftEntries.filter((entry) => entry.status === 'invalid'),
     [parameterDraftEntries]
   )
+  const receiverDraftEntries = useMemo(
+    () => parameterDraftEntries.filter((entry) => isReceiverReviewParamId(entry.id)),
+    [parameterDraftEntries]
+  )
+  const receiverStagedDrafts = useMemo(
+    () => receiverDraftEntries.filter((entry) => entry.status === 'staged'),
+    [receiverDraftEntries]
+  )
+  const receiverInvalidDrafts = useMemo(
+    () => receiverDraftEntries.filter((entry) => entry.status === 'invalid'),
+    [receiverDraftEntries]
+  )
+  const portsDraftEntries = useMemo(
+    () => parameterDraftEntries.filter((entry) => isPortsReviewParamId(entry.id)),
+    [parameterDraftEntries]
+  )
+  const portsStagedDrafts = useMemo(
+    () => portsDraftEntries.filter((entry) => entry.status === 'staged'),
+    [portsDraftEntries]
+  )
+  const portsInvalidDrafts = useMemo(
+    () => portsDraftEntries.filter((entry) => entry.status === 'invalid'),
+    [portsDraftEntries]
+  )
+  const tuningDraftEntries = useMemo(
+    () => parameterDraftEntries.filter((entry) => isTuningReviewParamId(entry.id)),
+    [parameterDraftEntries]
+  )
+  const tuningStagedDrafts = useMemo(
+    () => tuningDraftEntries.filter((entry) => entry.status === 'staged'),
+    [tuningDraftEntries]
+  )
+  const tuningInvalidDrafts = useMemo(
+    () => tuningDraftEntries.filter((entry) => entry.status === 'invalid'),
+    [tuningDraftEntries]
+  )
+  const outputReviewDraftEntries = useMemo(
+    () => parameterDraftEntries.filter((entry) => OUTPUT_REVIEW_PARAM_IDS.includes(entry.id as (typeof OUTPUT_REVIEW_PARAM_IDS)[number])),
+    [parameterDraftEntries]
+  )
+  const outputReviewStagedDrafts = useMemo(
+    () => outputReviewDraftEntries.filter((entry) => entry.status === 'staged'),
+    [outputReviewDraftEntries]
+  )
+  const outputReviewInvalidDrafts = useMemo(
+    () => outputReviewDraftEntries.filter((entry) => entry.status === 'invalid'),
+    [outputReviewDraftEntries]
+  )
   const stagedParameterGroups = useMemo(
     () => groupParameterDraftEntries(parameterDraftEntries, ['staged']),
     [parameterDraftEntries]
@@ -1301,6 +1580,43 @@ export function App() {
   const selectedParameterOption = selectedParameterDraft?.nextValue !== undefined
     ? findParameterOption(selectedParameter?.definition, selectedParameterDraft.nextValue)
     : findParameterOption(selectedParameter?.definition, selectedParameter?.value)
+  const modeAssignmentParameters = useMemo(
+    () =>
+      Array.from({ length: 6 }, (_, index) => `FLTMODE${index + 1}`)
+        .map((paramId) => snapshot.parameters.find((parameter) => parameter.id === paramId))
+        .filter((parameter): parameter is ParameterState => parameter !== undefined),
+    [snapshot.parameters]
+  )
+  const serialPortViewModels = useMemo(() => buildSerialPortViewModels(snapshot), [snapshot])
+  const gpsPeripheralViewModels = useMemo(() => buildGpsPeripheralViewModels(snapshot), [snapshot])
+  const tuningParameters = useMemo(
+    () =>
+      TUNING_PARAM_IDS.map((paramId) => snapshot.parameters.find((parameter) => parameter.id === paramId)).filter(
+        (parameter): parameter is ParameterState => parameter !== undefined
+      ),
+    [snapshot.parameters]
+  )
+  const flightFeelParameters = useMemo(
+    () =>
+      TUNING_FLIGHT_FEEL_PARAM_IDS.map((paramId) => tuningParameters.find((parameter) => parameter.id === paramId)).filter(
+        (parameter): parameter is ParameterState => parameter !== undefined
+      ),
+    [tuningParameters]
+  )
+  const acroTuningParameters = useMemo(
+    () =>
+      TUNING_ACRO_PARAM_IDS.map((paramId) => tuningParameters.find((parameter) => parameter.id === paramId)).filter(
+        (parameter): parameter is ParameterState => parameter !== undefined
+      ),
+    [tuningParameters]
+  )
+  const outputReviewParameters = useMemo(
+    () =>
+      OUTPUT_REVIEW_PARAM_IDS.map((paramId) => snapshot.parameters.find((parameter) => parameter.id === paramId)).filter(
+        (parameter): parameter is ParameterState => parameter !== undefined
+      ),
+    [snapshot.parameters]
+  )
   const recentModeSwitchChange = modeSwitchActivity && Date.now() - modeSwitchActivity.changedAtMs < 3000
   const modeSwitchExerciseProgress =
     modeSwitchExercise.targetSlots.length === 0 ? 0 : (modeSwitchExercise.visitedSlots.length / modeSwitchExercise.targetSlots.length) * 100
@@ -1324,6 +1640,10 @@ export function App() {
     try {
       await runtime.connect()
       await runtime.requestParameterList()
+      if (parameterFollowUp?.refreshRequired) {
+        await runtime.waitForParameterSync()
+        setParameterFollowUp(undefined)
+      }
     } finally {
       setBusyAction(undefined)
     }
@@ -1402,6 +1722,103 @@ export function App() {
       tone: 'neutral',
       text: 'Cleared all local parameter drafts.'
     })
+  }
+
+  function handleDiscardScopedParameterDrafts(paramIds: readonly string[], scopeLabel: string): void {
+    const removableIds = paramIds.filter((paramId) => editedValues[paramId] !== undefined)
+    if (removableIds.length === 0) {
+      return
+    }
+
+    setEditedValues((existing) => {
+      const next = { ...existing }
+      removableIds.forEach((paramId) => {
+        delete next[paramId]
+      })
+      return next
+    })
+    setParameterNotice({
+      tone: 'neutral',
+      text: `Cleared ${removableIds.length} ${scopeLabel} draft change(s).`
+    })
+  }
+
+  async function handleApplyScopedParameterDrafts(
+    drafts: readonly ParameterDraftEntry[],
+    busyKey: string,
+    scopeLabel: string
+  ): Promise<void> {
+    if (!canApplyDraftParameters) {
+      setParameterNotice({
+        tone: 'warning',
+        text: 'Connect, finish parameter sync, and keep the vehicle disarmed before applying configuration changes.'
+      })
+      return
+    }
+
+    const invalidDrafts = drafts.filter((entry) => entry.status === 'invalid')
+    if (invalidDrafts.length > 0) {
+      setParameterNotice({
+        tone: 'danger',
+        text: `${scopeLabel} has ${invalidDrafts.length} invalid value(s). Fix them before applying from this view.`
+      })
+      return
+    }
+
+    const stagedDrafts = drafts.filter((entry) => entry.status === 'staged' && entry.nextValue !== undefined)
+    if (stagedDrafts.length === 0) {
+      setParameterNotice({
+        tone: 'neutral',
+        text: `No ${scopeLabel.toLowerCase()} changes are staged in this view.`
+      })
+      return
+    }
+
+    const appliedParamIds: string[] = []
+    setBusyAction(busyKey)
+    try {
+      const rebootRequiredCount = stagedDrafts.filter((entry) => entry.definition?.rebootRequired).length
+      const result = await runtime.setParameters(
+        stagedDrafts.map((entry) => ({
+          paramId: entry.id,
+          paramValue: entry.nextValue as number
+        }))
+      )
+      appliedParamIds.push(...result.applied.map((entry) => entry.paramId))
+      setParameterNotice({
+        tone: 'success',
+        text:
+          result.applied.length === 0
+            ? `No ${scopeLabel.toLowerCase()} changes needed to be written.`
+            : `Verified ${result.applied.length} ${scopeLabel.toLowerCase()} change(s) from this view.`
+      })
+      setParameterFollowUp({
+        requiresReboot: rebootRequiredCount > 0,
+        refreshRequired: true,
+        changedCount: result.applied.length,
+        text:
+          rebootRequiredCount > 0
+            ? `${scopeLabel} changed reboot-sensitive settings. Request a reboot, then pull parameters again before continuing setup.`
+            : `${scopeLabel} changed live controller values. Pull parameters again if you want a clean post-write snapshot.`
+      })
+    } catch (error) {
+      setParameterNotice({
+        tone: 'danger',
+        text: error instanceof Error ? error.message : `${scopeLabel} write failed.`
+      })
+    } finally {
+      if (appliedParamIds.length > 0) {
+        setEditedValues((existing) => {
+          const next = { ...existing }
+          appliedParamIds.forEach((paramId) => {
+            delete next[paramId]
+          })
+          return next
+        })
+      }
+
+      setBusyAction(undefined)
+    }
   }
 
   async function handleApplyParameterDraft(draft: ParameterDraftEntry): Promise<void> {
@@ -1564,7 +1981,10 @@ export function App() {
   function handleFailModeSwitchExercise(): void {
     setModeSwitchExercise((current) =>
       current.status === 'running'
-        ? failModeSwitchExerciseState(current, `Did not observe ${formatModeSlotLabel(snapshot, current.currentTargetSlot)} on the live mode channel.`)
+        ? failModeSwitchExerciseState(
+            current,
+            `Did not observe ${formatModeExerciseTargetLabel(snapshot, current.currentTargetSlot)} on the live mode channel.`
+          )
         : current
     )
   }
@@ -1712,7 +2132,7 @@ export function App() {
     setSelectedParameterId(draftIds[0] ?? selectedParameterId)
     setParameterNotice({
       tone: 'warning',
-      text: `Staged ${draftIds.length} RCMAP_* change(s). Apply them, reboot, refresh parameters, then rerun RC endpoint capture.`
+      text: `Staged ${draftIds.length} RCMAP_* change(s). Review and apply them from the Receiver view, then reboot, refresh parameters, and rerun RC endpoint capture.`
     })
   }
 
@@ -1762,7 +2182,7 @@ export function App() {
     setSelectedParameterId(Object.keys(nextDrafts)[0] ?? selectedParameterId)
     setParameterNotice({
       tone: 'warning',
-      text: `Staged ${Object.keys(nextDrafts).length} RC calibration value(s) for review in the parameter editor.`
+      text: `Staged ${Object.keys(nextDrafts).length} RC calibration value(s). Review and apply them from the Receiver view before confirming radio setup.`
     })
   }
 
@@ -1846,13 +2266,13 @@ export function App() {
     if (modeSwitchExercise.status === 'running') {
       return modeSwitchExercise.currentTargetSlot === undefined
         ? 'All configured switch positions have been observed.'
-        : `Move the switch to ${formatModeSlotLabel(snapshot, modeSwitchExercise.currentTargetSlot)}.`
+        : `Move the configured flight-mode control to ${formatModeExerciseTargetLabel(snapshot, modeSwitchExercise.currentTargetSlot)}.`
     }
     if (!snapshot.liveVerification.rcInput.verified) {
       return 'Waiting for live RC telemetry before starting the switch exercise.'
     }
-    if (modeAssignments.length < 2) {
-      return 'At least two configured FLTMODEn positions are needed for a useful switch exercise.'
+    if (modeExerciseAssignments.length < 2) {
+      return 'At least two distinct configured flight-mode positions are needed for a useful switch exercise.'
     }
     return 'Start the switch exercise to walk through the configured flight-mode positions.'
   })()
@@ -1864,10 +2284,10 @@ export function App() {
           `Visited ${modeSwitchExercise.visitedSlots.length} of ${modeSwitchExercise.targetSlots.length} configured positions.`
         ]
       : modeSwitchExercise.status === 'passed'
-        ? ['The mode channel moved through every configured position that the app expected to see.']
+        ? ['The mode channel moved through every distinct configured flight-mode position that the app expected to see.']
         : modeSwitchExercise.status === 'failed'
           ? ['Check the radio mapping, `FLTMODE_CH`/`MODE_CH`, and switch endpoints, then run the exercise again.']
-          : ['The app will watch the live mode channel and mark each configured position as it is observed.']
+          : ['The app will watch the live mode channel and mark each distinct configured flight-mode position as it is observed.']
 
   const rcRangeExerciseSummary = (() => {
     if (rcRangeExercise.status === 'passed') {
@@ -2143,34 +2563,15 @@ export function App() {
       return undefined
     }
 
-    const actions: SetupFlowActionDescriptor[] = []
-    if (parameterFollowUp.requiresReboot) {
-      actions.push({
-        kind: 'guided',
-        label: guidedActionButtonLabel('reboot-autopilot', snapshot, busyAction),
-        tone: 'secondary',
-        actionId: 'reboot-autopilot',
-        disabled: busyAction !== undefined || !canRunGuidedAction(snapshot, 'reboot-autopilot')
-      })
-    } else if (parameterFollowUp.refreshRequired) {
-      actions.push({
-        kind: 'guided',
-        label: guidedActionButtonLabel('request-parameters', snapshot, busyAction),
-        tone: 'primary',
-        actionId: 'request-parameters',
-        disabled: busyAction !== undefined || !canRunGuidedAction(snapshot, 'request-parameters')
-      })
-    }
-
     return {
       title: parameterFollowUp.requiresReboot
-        ? 'Pending reboot before later setup steps unlock'
-        : 'Pending parameter refresh before later setup steps unlock',
+        ? 'Pending sidebar reboot before later setup steps unlock'
+        : 'Pending sidebar refresh before later setup steps unlock',
       tone: parameterFollowUp.requiresReboot ? 'warning' : 'neutral',
-      text: parameterFollowUp.text,
-      actions
+      text: `${parameterFollowUp.text} Use the sidebar session controls to continue this setup session.`,
+      actions: []
     }
-  }, [busyAction, parameterFollowUp, snapshot])
+  }, [parameterFollowUp])
 
   const setupFlowSections = useMemo<SetupFlowSectionDescriptor[]>(() => {
     const airframeConfirmation = getSetupConfirmationRecord('airframe')
@@ -2223,7 +2624,7 @@ export function App() {
                 : formatParameterSync(snapshot)
           detail = parameterFollowUp?.text
             ?? (snapshot.connection.kind !== 'connected'
-              ? 'Use the Connection panel first, then pull parameters once heartbeat is visible.'
+              ? 'Use the sidebar session controls first, then wait for heartbeat and the initial parameter sync.'
               : 'Re-run parameter sync whenever you need a fresh snapshot before continuing guided setup.')
           evidence = [
             `Link: ${snapshot.connection.kind}`,
@@ -2581,8 +2982,8 @@ export function App() {
               met: modeSwitchEstimate.channelNumber !== undefined
             },
             {
-              label: 'At least two flight-mode positions are assigned',
-              met: modeAssignments.length >= 2
+              label: 'At least two distinct flight-mode positions are assigned',
+              met: modeExerciseAssignments.length >= 2
             },
             {
               label: 'Mode switch exercise passed',
@@ -2591,7 +2992,7 @@ export function App() {
           ]
           summary =
             modeSwitchExercise.status === 'passed'
-              ? 'Mode switch exercise passed with all configured positions observed.'
+              ? 'Mode switch exercise passed with all distinct configured positions observed.'
               : modeSwitchExercise.status === 'running'
                 ? modeSwitchExerciseSummary
                 : modeSwitchEstimate.estimatedSlot !== undefined
@@ -2727,7 +3128,7 @@ export function App() {
     canRunRcRangeExercise,
     currentRcAxisChannelMap,
     escSetup,
-    modeAssignments.length,
+    modeExerciseAssignments.length,
     modeSwitchEstimate.channelNumber,
     modeSwitchEstimate.estimatedSlot,
     modeSwitchExercise.failureReason,
@@ -2770,6 +3171,7 @@ export function App() {
   const completedSetupSectionCount = setupFlowSections.filter((section) => section.status === 'complete').length
   const setupFlowProgress = setupFlowSections.length === 0 ? 0 : (completedSetupSectionCount / setupFlowSections.length) * 100
   const guidedSetupComplete = setupFlowSections.length > 0 && completedSetupSectionCount === setupFlowSections.length
+  const isExpertMode = productMode === 'expert'
   const appViews = useMemo<AppViewDescriptor[]>(
     () =>
       metadataCatalog.appViews.map((view) => {
@@ -2790,6 +3192,14 @@ export function App() {
               badge: snapshot.liveVerification.rcInput.verified ? 'live' : 'pending',
               tone: snapshot.liveVerification.rcInput.verified ? 'success' : 'warning'
             }
+          case 'ports':
+            return {
+              id: view.id,
+              label: view.label,
+              description: view.description,
+              badge: portsStagedDrafts.length > 0 ? `${portsStagedDrafts.length} staged` : `${serialPortViewModels.length} ports`,
+              tone: portsInvalidDrafts.length > 0 ? 'danger' : portsStagedDrafts.length > 0 ? 'warning' : 'neutral'
+            }
           case 'outputs':
             return {
               id: view.id,
@@ -2805,6 +3215,14 @@ export function App() {
               description: view.description,
               badge: snapshot.preArmStatus.healthy ? 'clear' : `${snapshot.preArmStatus.issues.length} issues`,
               tone: snapshot.preArmStatus.healthy ? 'success' : 'warning'
+            }
+          case 'tuning':
+            return {
+              id: view.id,
+              label: view.label,
+              description: view.description,
+              badge: tuningStagedDrafts.length > 0 ? `${tuningStagedDrafts.length} staged` : `${tuningParameters.length} controls`,
+              tone: tuningInvalidDrafts.length > 0 ? 'danger' : tuningStagedDrafts.length > 0 ? 'warning' : 'neutral'
             }
           case 'parameters':
             return {
@@ -2829,12 +3247,22 @@ export function App() {
       guidedSetupComplete,
       metadataCatalog.appViews,
       outputMapping.motorOutputs.length,
+      portsInvalidDrafts.length,
+      portsStagedDrafts.length,
+      serialPortViewModels.length,
       setupFlowSections.length,
       snapshot.liveVerification.rcInput.verified,
       snapshot.parameters.length,
       snapshot.preArmStatus,
+      tuningInvalidDrafts.length,
+      tuningParameters.length,
+      tuningStagedDrafts.length,
       stagedParameterDrafts.length
     ]
+  )
+  const visibleAppViews = useMemo(
+    () => appViews.filter((view) => isExpertMode || !isExpertOnlyView(view.id)),
+    [appViews, isExpertMode]
   )
 
   function formatCategoryLabel(categoryId: string | undefined): string {
@@ -2857,6 +3285,22 @@ export function App() {
       setSelectedSetupSectionId(recommendedSetupSection.id)
     }
   }, [recommendedSetupSection, selectedSetupSectionCandidate])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    window.sessionStorage.setItem(PRODUCT_MODE_STORAGE_KEY, productMode)
+  }, [productMode])
+
+  useEffect(() => {
+    if (isExpertMode || !isExpertOnlyView(activeViewId)) {
+      return
+    }
+
+    setActiveViewId('setup')
+  }, [activeViewId, isExpertMode])
 
   function handleSetupFlowAction(action: SetupFlowActionDescriptor): void {
     if (action.disabled) {
@@ -2902,17 +3346,17 @@ export function App() {
   }
 
   return (
-    <main className="app-shell">
-      <header className="hero">
-        <div>
-          <p className="eyebrow">Prototype Vertical Slice</p>
-          <h1>ArduConfigurator</h1>
-          <p className="lede">
-            Shared ArduCopter runtime first, guided setup first, browser and desktop adapters later.
-          </p>
-        </div>
-        <StatusBadge tone={toneForConnection(snapshot.connection.kind)}>{snapshot.connection.kind}</StatusBadge>
-      </header>
+	    <main className="app-shell">
+	      <header className="hero">
+	        <div>
+	          <p className="eyebrow">Browser-First ArduPilot Configurator</p>
+	          <h1>ArduConfigurator</h1>
+	          <p className="lede">
+	            ArduCopter-first setup, configuration, and tuning with a shared runtime for browser and desktop workflows.
+	          </p>
+	        </div>
+	        <StatusBadge tone={toneForConnection(snapshot.connection.kind)}>{snapshot.connection.kind}</StatusBadge>
+	      </header>
 
       <div className="workspace-layout">
         <aside className="workspace-sidebar">
@@ -2934,14 +3378,14 @@ export function App() {
                   <option value="usb-bench">USB bench</option>
                 </select>
               </div>
-              <div className="button-row">
-                <button
-                  style={buttonStyle('primary')}
-                  onClick={() => void handleConnect()}
-                  disabled={busyAction !== undefined || snapshot.connection.kind === 'connected'}
-                >
-                  Connect
-                </button>
+	              <div className="button-row">
+	                <button
+	                  style={buttonStyle('primary')}
+	                  onClick={() => void handleConnect()}
+	                  disabled={busyAction !== undefined || snapshot.connection.kind === 'connected'}
+	                >
+	                  {connectButtonLabel(snapshot, parameterFollowUp)}
+	                </button>
                 <button
                   style={buttonStyle()}
                   onClick={() => void handleDisconnect()}
@@ -2960,14 +3404,100 @@ export function App() {
                 <span>{snapshot.parameterStats.status === 'complete' ? `${snapshot.parameterStats.downloaded} params` : formatParameterSync(snapshot)}</span>
                 <span>{snapshot.preArmStatus.healthy ? 'Pre-arm clear' : `${snapshot.preArmStatus.issues.length} pre-arm`}</span>
               </div>
-              <div className="sync-meter" aria-hidden="true">
-                <div className="sync-meter__fill" style={{ width: `${parameterSyncWidth}%` }} />
+	              <div className="sync-meter" aria-hidden="true">
+	                <div className="sync-meter__fill" style={{ width: `${parameterSyncWidth}%` }} />
+	              </div>
+	              {parameterFollowUp ? (
+	                <div className="session-follow-up">
+	                  <div className="session-follow-up__header">
+	                    <strong>Session action required</strong>
+	                    <StatusBadge tone={parameterFollowUp.requiresReboot ? 'warning' : 'neutral'}>
+	                      {parameterFollowUp.requiresReboot ? 'reboot' : 'refresh'}
+	                    </StatusBadge>
+	                  </div>
+	                  <p>
+	                    {snapshot.connection.kind === 'connected'
+	                      ? parameterFollowUp.text
+	                      : `${parameterFollowUp.text} Reconnect from the session controls above to continue.`}
+	                  </p>
+	                  {snapshot.connection.kind === 'connected' ? (
+	                    <div className="button-row">
+	                      {parameterFollowUp.requiresReboot ? (
+	                        <button
+	                          style={buttonStyle()}
+	                          onClick={() => void handleGuidedAction('reboot-autopilot')}
+	                          disabled={busyAction !== undefined || !canRunGuidedAction(snapshot, 'reboot-autopilot')}
+	                        >
+	                          Request Reboot
+	                        </button>
+	                      ) : null}
+	                      <button
+	                        style={buttonStyle()}
+	                        onClick={() => void handleGuidedAction('request-parameters')}
+	                        disabled={parameterFollowUp.requiresReboot || busyAction !== undefined || !canRunGuidedAction(snapshot, 'request-parameters')}
+	                      >
+	                        Pull Parameters
+	                      </button>
+	                    </div>
+	                  ) : null}
+	                </div>
+	              ) : null}
+	            </div>
+	          </Panel>
+
+          <Panel
+            title="Workspace Mode"
+            subtitle="Choose whether this browser session stays focused on guided setup or exposes deeper power-user surfaces."
+          >
+            <div className="workspace-sidebar__stack">
+              <div className="mode-toggle" role="tablist" aria-label="Configurator product mode">
+                <button
+                  type="button"
+                  className={`mode-toggle__option${productMode === 'basic' ? ' is-active' : ''}`}
+                  onClick={() => setProductMode('basic')}
+                >
+                  <strong>Basic</strong>
+                  <small>Setup, ports, receiver, outputs, and power.</small>
+                </button>
+                <button
+                  type="button"
+                  className={`mode-toggle__option${productMode === 'expert' ? ' is-active' : ''}`}
+                  onClick={() => setProductMode('expert')}
+                >
+                  <strong>Expert</strong>
+                  <small>Unlocks raw parameter editing and deeper system changes.</small>
+                </button>
               </div>
+
+              <div className="workspace-mode-summary">
+                <StatusBadge tone={isExpertMode ? 'warning' : 'success'}>{isExpertMode ? 'expert' : 'basic'}</StatusBadge>
+                <p>
+                  {isExpertMode
+                    ? 'Expert mode is active for this browser session. The full parameter platform is available.'
+                    : 'Basic mode is active for this browser session. Raw parameter editing stays hidden until you switch to Expert.'}
+                </p>
+              </div>
+
+              {!isExpertMode ? (
+                <div className="workspace-mode-summary workspace-mode-summary--muted">
+                  <StatusBadge tone="neutral">hidden</StatusBadge>
+                  <p>
+                    Expert-only surfaces: {appViews.filter((view) => isExpertOnlyView(view.id)).map((view) => view.label).join(', ')}.
+                  </p>
+                </div>
+              ) : null}
+
+              {!isExpertMode && stagedParameterDrafts.length > 0 ? (
+                <div className="workspace-mode-summary workspace-mode-summary--warning">
+                  <StatusBadge tone="warning">{stagedParameterDrafts.length} staged</StatusBadge>
+                  <p>There are advanced parameter drafts in progress. Switch to Expert to review or apply them.</p>
+                </div>
+              ) : null}
             </div>
           </Panel>
 
           <nav className="workspace-nav" aria-label="Primary configurator views">
-            {appViews.map((view) => (
+            {visibleAppViews.map((view) => (
               <button
                 key={view.id}
                 type="button"
@@ -2988,46 +3518,17 @@ export function App() {
       {activeViewId === 'setup' ? (
       <>
       <section className="grid two-up">
-        <div id="setup-panel-link">
-          <Panel
-            title="Connection"
-            subtitle="The runtime waits for heartbeat, tracks sync progress, and can switch between full-power and USB-bench setup semantics."
-            actions={
-              <div className="button-row">
-                <select
-                  value={transportMode}
-                  onChange={(event) => setTransportMode(event.target.value as TransportMode)}
-                  disabled={busyAction !== undefined || snapshot.connection.kind === 'connected'}
-                >
-                  <option value="demo">Demo transport</option>
-                  <option value="web-serial" disabled={!webSerialSupported}>
-                    Browser serial{webSerialSupported ? '' : ' (unsupported)'}
-                  </option>
-                </select>
-                <select value={sessionProfile} onChange={(event) => setSessionProfile(event.target.value as SessionProfile)}>
-                  <option value="full-power">Full power</option>
-                  <option value="usb-bench">USB bench</option>
-                </select>
-                <button
-                  style={buttonStyle('primary')}
-                  onClick={() => void handleConnect()}
-                  disabled={busyAction !== undefined || snapshot.connection.kind === 'connected'}
-                >
-                  Connect
-                </button>
-                <button
-                  style={buttonStyle()}
-                  onClick={() => void handleDisconnect()}
-                  disabled={busyAction !== undefined || snapshot.connection.kind !== 'connected'}
-                >
-                  Disconnect
-                </button>
-              </div>
-            }
-          >
-            <KeyValueRow
-              label="Transport"
-              value={transportMode === 'demo' ? 'Demo MAVLink stream' : webSerialSupported ? 'Browser Web Serial' : 'Unavailable'}
+	        <div id="setup-panel-link">
+	          <Panel
+	            title="Vehicle Link"
+	            subtitle="Session controls live in the sidebar. This panel stays focused on live link state, sync status, and current vehicle identity."
+	          >
+	            <p className="telemetry-note">
+	              Use the sidebar session controls to connect, reconnect, change transport, or switch between full-power and USB-bench workflows.
+	            </p>
+	            <KeyValueRow
+	              label="Transport"
+	              value={transportMode === 'demo' ? 'Demo MAVLink stream' : webSerialSupported ? 'Browser Web Serial' : 'Unavailable'}
             />
             <KeyValueRow label="Session" value={snapshot.sessionProfile === 'usb-bench' ? 'USB Bench' : 'Full Power'} />
             <KeyValueRow label="Vehicle" value={snapshot.vehicle?.vehicle ?? 'Waiting for heartbeat'} />
@@ -3036,7 +3537,7 @@ export function App() {
             <KeyValueRow label="RC Link" value={formatRcLink(snapshot)} />
             <KeyValueRow label="Battery" value={formatBatteryTelemetry(snapshot)} />
             <KeyValueRow label="Sync" value={formatParameterSync(snapshot)} />
-            <KeyValueRow label="Duplicate Frames" value={String(snapshot.parameterStats.duplicateFrames)} />
+            {isExpertMode ? <KeyValueRow label="Duplicate Frames" value={String(snapshot.parameterStats.duplicateFrames)} /> : null}
             <div className="sync-meter" aria-hidden="true">
               <div className="sync-meter__fill" style={{ width: `${parameterSyncWidth}%` }} />
             </div>
@@ -3197,10 +3698,247 @@ export function App() {
           </div>
         </Panel>
       ) : null}
-      </>
-      ) : null}
+	      </>
+	      ) : null}
 
-      {(activeViewId === 'receiver' || activeViewId === 'power') ? (
+	      {activeViewId === 'ports' ? (
+	      <section className="grid one-up">
+	        <div id="setup-panel-ports">
+	          <Panel
+	            title="Ports & Peripherals"
+	            subtitle="Assign serial roles, baud rates, GPS drivers, and hardware flow-control settings without dropping into the raw parameter table."
+	          >
+	          <div className="telemetry-stack">
+	            <div className="telemetry-header">
+	              <div>
+	                <h3>Serial port role review</h3>
+	                <p>
+	                  Configure the links that make the rest of setup possible: telemetry radios, serial receivers, GPS modules, and other attached
+	                  peripherals.
+	                </p>
+	              </div>
+	              <StatusBadge tone={toneForScopedDraftReview(portsStagedDrafts.length, portsInvalidDrafts.length)}>
+	                {portsInvalidDrafts.length > 0
+	                  ? `${portsInvalidDrafts.length} invalid`
+	                  : portsStagedDrafts.length > 0
+	                    ? `${portsStagedDrafts.length} staged`
+	                    : 'in sync'}
+	              </StatusBadge>
+	            </div>
+
+	            {parameterNotice ? (
+	              <div className="parameter-review__notice">
+	                <StatusBadge tone={parameterNotice.tone}>{parameterNotice.tone}</StatusBadge>
+	                <p>{parameterNotice.text}</p>
+	              </div>
+	            ) : null}
+
+	            <div className="telemetry-metric-grid">
+	              <article className="telemetry-metric-card">
+	                <span>Detected ports</span>
+	                <strong>{serialPortViewModels.length}</strong>
+	              </article>
+	              <article className="telemetry-metric-card">
+	                <span>Staged changes</span>
+	                <strong>{portsStagedDrafts.length}</strong>
+	              </article>
+	              <article className="telemetry-metric-card">
+	                <span>Primary GPS</span>
+	                <strong>{formatArducopterGpsType(gpsPeripheralViewModels.find((peripheral) => peripheral.label === 'Primary GPS')?.value)}</strong>
+	              </article>
+	              <article className="telemetry-metric-card">
+	                <span>Secondary GPS</span>
+	                <strong>{formatArducopterGpsType(gpsPeripheralViewModels.find((peripheral) => peripheral.label === 'Secondary GPS')?.value)}</strong>
+	              </article>
+	            </div>
+
+	            {serialPortViewModels.length > 0 ? (
+	              <div className="port-card-grid">
+	                {serialPortViewModels.map((port) => (
+	                  <article key={port.portNumber} className="port-card">
+	                    <div className="port-card__header">
+	                      <div>
+	                        <strong>{port.label}</strong>
+	                        <small>{port.protocolLabel}</small>
+	                      </div>
+	                      <StatusBadge tone={port.editable ? 'neutral' : 'warning'}>
+	                        {port.editable ? `Port ${port.portNumber}` : 'read only'}
+	                      </StatusBadge>
+	                    </div>
+	                    <p>{port.usageSummary}</p>
+
+	                    <div className="port-card__fields">
+	                      {port.protocolParameter ? (() => {
+	                        const protocolParameter = port.protocolParameter
+	                        return (
+	                        <label className="scoped-editor-field scoped-editor-field--compact">
+	                          <span>Protocol</span>
+	                          <select
+	                            value={editedValues[protocolParameter.id] ?? String(port.protocolValue ?? '')}
+	                            onChange={(event) =>
+	                              setEditedValues((existing) => ({
+	                                ...existing,
+	                                [protocolParameter.id]: event.target.value
+	                              }))
+	                            }
+	                            disabled={!port.editable}
+	                          >
+	                            {(protocolParameter.definition?.options ?? []).map((valueOption) => (
+	                              <option key={`${protocolParameter.id}:${valueOption.value}`} value={String(valueOption.value)}>
+	                                {valueOption.label} ({valueOption.value})
+	                              </option>
+	                            ))}
+	                          </select>
+	                        </label>
+	                        )
+	                      })() : null}
+
+	                      {port.baudParameter ? (() => {
+	                        const baudParameter = port.baudParameter
+	                        return (
+	                        <label className="scoped-editor-field scoped-editor-field--compact">
+	                          <span>Baud</span>
+	                          <select
+	                            value={editedValues[baudParameter.id] ?? String(port.baudValue ?? '')}
+	                            onChange={(event) =>
+	                              setEditedValues((existing) => ({
+	                                ...existing,
+	                                [baudParameter.id]: event.target.value
+	                              }))
+	                            }
+	                            disabled={!port.editable}
+	                          >
+	                            {(baudParameter.definition?.options ?? []).map((valueOption) => (
+	                              <option key={`${baudParameter.id}:${valueOption.value}`} value={String(valueOption.value)}>
+	                                {valueOption.label} baud
+	                              </option>
+	                            ))}
+	                          </select>
+	                        </label>
+	                        )
+	                      })() : null}
+
+	                      {port.flowControlParameter ? (() => {
+	                        const flowControlParameter = port.flowControlParameter
+	                        return (
+	                        <label className="scoped-editor-field scoped-editor-field--compact">
+	                          <span>Flow control</span>
+	                          <select
+	                            value={editedValues[flowControlParameter.id] ?? String(port.flowControlValue ?? '')}
+	                            onChange={(event) =>
+	                              setEditedValues((existing) => ({
+	                                ...existing,
+	                                [flowControlParameter.id]: event.target.value
+	                              }))
+	                            }
+	                            disabled={!port.editable}
+	                          >
+	                            {(flowControlParameter.definition?.options ?? []).map((valueOption) => (
+	                              <option key={`${flowControlParameter.id}:${valueOption.value}`} value={String(valueOption.value)}>
+	                                {valueOption.label}
+	                              </option>
+	                            ))}
+	                          </select>
+	                        </label>
+	                        )
+	                      })() : null}
+	                    </div>
+
+	                    <div className="config-pills">
+	                      <span>{port.protocolLabel}</span>
+	                      <span>{port.baudLabel}</span>
+	                      {port.flowControlLabel ? <span>{port.flowControlLabel}</span> : null}
+	                    </div>
+
+	                    {port.notes.length > 0 ? (
+	                      <ul className="output-note-list">
+	                        {port.notes.map((note) => (
+	                          <li key={note}>{note}</li>
+	                        ))}
+	                      </ul>
+	                    ) : null}
+	                  </article>
+	                ))}
+	              </div>
+	            ) : (
+	              <p className="telemetry-note">No `SERIALx_*` parameters were detected in the current snapshot.</p>
+	            )}
+
+	            {gpsPeripheralViewModels.length > 0 ? (
+	              <div className="port-card-grid">
+	                {gpsPeripheralViewModels.map((peripheral) => (
+	                  <article key={peripheral.label} className="port-card">
+	                    <div className="port-card__header">
+	                      <div>
+	                        <strong>{peripheral.label}</strong>
+	                        <small>{formatArducopterGpsType(peripheral.value)}</small>
+	                      </div>
+	                      <StatusBadge tone={peripheral.value === 0 ? 'neutral' : 'success'}>
+	                        {peripheral.value === 0 ? 'disabled' : 'configured'}
+	                      </StatusBadge>
+	                    </div>
+	                    <p>Choose the expected GPS/peripheral driver, then verify the live device after reboot and reconnect.</p>
+
+	                    {peripheral.parameter ? (() => {
+	                      const parameter = peripheral.parameter
+	                      return (
+	                      <label className="scoped-editor-field scoped-editor-field--compact">
+	                        <span>{parameter.definition?.label ?? parameter.id}</span>
+	                        <select
+	                          value={editedValues[parameter.id] ?? String(peripheral.value ?? '')}
+	                          onChange={(event) =>
+	                            setEditedValues((existing) => ({
+	                              ...existing,
+	                              [parameter.id]: event.target.value
+	                            }))
+	                          }
+	                        >
+	                          {(parameter.definition?.options ?? []).map((valueOption) => (
+	                            <option key={`${parameter.id}:${valueOption.value}`} value={String(valueOption.value)}>
+	                              {valueOption.label} ({valueOption.value})
+	                            </option>
+	                          ))}
+	                        </select>
+	                      </label>
+	                      )
+	                    })() : null}
+	                  </article>
+	                ))}
+	              </div>
+	            ) : null}
+
+	            <div className="switch-exercise-controls">
+	              <button
+	                style={buttonStyle('primary')}
+	                onClick={() => void handleApplyScopedParameterDrafts(portsDraftEntries, 'ports:apply', 'Ports & peripherals')}
+	                disabled={
+	                  busyAction !== undefined ||
+	                  portsStagedDrafts.length === 0 ||
+	                  portsInvalidDrafts.length > 0 ||
+	                  !canApplyDraftParameters
+	                }
+	              >
+	                {busyAction === 'ports:apply' ? 'Applying…' : `Apply Port Changes (${portsStagedDrafts.length})`}
+	              </button>
+	              <button
+	                style={buttonStyle()}
+	                onClick={() => handleDiscardScopedParameterDrafts(portsDraftEntries.map((entry) => entry.id), 'ports')}
+	                disabled={busyAction !== undefined || portsDraftEntries.length === 0}
+	              >
+	                Discard Port Changes
+	              </button>
+	            </div>
+
+	            <p className="telemetry-note">
+	              Use the sidebar session controls to reboot and refresh after changing serial roles, GPS drivers, or flow-control settings.
+	            </p>
+	          </div>
+	          </Panel>
+	        </div>
+	      </section>
+	      ) : null}
+
+	      {(activeViewId === 'receiver' || activeViewId === 'power') ? (
       <section className={`grid ${activeViewId === 'receiver' || activeViewId === 'power' ? 'one-up' : 'two-up'}`}>
         {activeViewId === 'receiver' ? (
         <div id="setup-panel-rc">
@@ -3486,7 +4224,7 @@ export function App() {
               </div>
             </div>
 
-            <div className="rc-calibration-card">
+	            <div className="rc-calibration-card">
               <div className="switch-exercise-card__header">
                 <div>
                   <strong>RC calibration capture</strong>
@@ -3536,10 +4274,10 @@ export function App() {
               </div>
 
               <ol className="switch-exercise-instructions">
-                <li>Start capture with the sticks centered and throttle low.</li>
-                <li>Move roll, pitch, throttle, and yaw through their full travel.</li>
-                <li>Stage the captured values into the parameter editor, then apply and refresh before confirming the radio step.</li>
-              </ol>
+	                <li>Start capture with the sticks centered and throttle low.</li>
+	                <li>Move roll, pitch, throttle, and yaw through their full travel.</li>
+	                <li>Stage the captured values, then review and apply them from the Receiver view before confirming the radio step.</li>
+	              </ol>
 
               <div className="switch-exercise-controls">
                 <button
@@ -3562,24 +4300,138 @@ export function App() {
                   disabled={rcCalibrationSession.status !== 'ready'}
                 >
                   Stage Captured Values
-                </button>
-              </div>
-            </div>
+	                </button>
+	              </div>
+	            </div>
 
-            {modeAssignments.length > 0 ? (
-              <div className="config-pills">
-                {modeAssignments.map((assignment) => (
-                  <span
-                    key={assignment.slot}
-                    className={assignment.slot === modeSwitchEstimate.estimatedSlot ? 'is-active' : undefined}
-                  >
-                    FLTMODE{assignment.slot} = {formatModeAssignment(assignment.value)}
-                  </span>
-                ))}
-              </div>
-            ) : null}
+	            <div className="scoped-review-card">
+	              <div className="switch-exercise-card__header">
+	                <div>
+	                  <strong>Receiver & mode changes in review</strong>
+	                  <p>
+	                    Keep RC mapping, calibration, and flight-mode work local to this view. Apply verified changes here instead of
+	                    jumping to Parameters.
+	                  </p>
+	                </div>
+	                <StatusBadge tone={toneForScopedDraftReview(receiverStagedDrafts.length, receiverInvalidDrafts.length)}>
+	                  {receiverInvalidDrafts.length > 0
+	                    ? `${receiverInvalidDrafts.length} invalid`
+	                    : receiverStagedDrafts.length > 0
+	                      ? `${receiverStagedDrafts.length} staged`
+	                      : 'in sync'}
+	                </StatusBadge>
+	              </div>
 
-            <div className="rc-channel-grid">
+	              {receiverDraftEntries.length > 0 ? (
+	                <div className="scoped-draft-list">
+	                  {receiverDraftEntries.map((draft) => (
+	                    <article key={draft.id} className={`scoped-draft-item scoped-draft-item--${draft.status}`}>
+	                      <div className="scoped-draft-item__header">
+	                        <strong>{draft.id}</strong>
+	                        <StatusBadge tone={toneForParameterDraftStatus(draft.status)}>{draft.status}</StatusBadge>
+	                      </div>
+	                      <p>{draft.label}</p>
+	                      <small>
+	                        {draft.status === 'staged'
+	                          ? `${formatParameterValue(draft.currentValue, draft.definition?.unit)} to ${formatParameterValue(
+	                              draft.nextValue,
+	                              draft.definition?.unit
+	                            )}`
+	                          : draft.reason ?? 'Draft matches the live controller value.'}
+	                      </small>
+	                    </article>
+	                  ))}
+	                </div>
+	              ) : (
+	                <p className="success-copy">No receiver-specific parameter changes are currently staged.</p>
+	              )}
+
+	              <div className="switch-exercise-controls">
+	                <button
+	                  style={buttonStyle('primary')}
+	                  onClick={() =>
+	                    void handleApplyScopedParameterDrafts(receiverDraftEntries, 'receiver:apply', 'Receiver setup')
+	                  }
+	                  disabled={
+	                    busyAction !== undefined ||
+	                    receiverStagedDrafts.length === 0 ||
+	                    receiverInvalidDrafts.length > 0 ||
+	                    !canApplyDraftParameters
+	                  }
+	                >
+	                  {busyAction === 'receiver:apply' ? 'Applying…' : `Apply Receiver Changes (${receiverStagedDrafts.length})`}
+	                </button>
+	                <button
+	                  style={buttonStyle()}
+	                  onClick={() =>
+	                    handleDiscardScopedParameterDrafts(receiverDraftEntries.map((entry) => entry.id), 'receiver')
+	                  }
+	                  disabled={busyAction !== undefined || receiverDraftEntries.length === 0}
+	                >
+	                  Discard Receiver Changes
+	                </button>
+	              </div>
+	            </div>
+
+	            {modeAssignmentParameters.length > 0 ? (
+	              <div className="scoped-review-card scoped-review-card--compact">
+	                <div className="switch-exercise-card__header">
+	                  <div>
+	                    <strong>Flight mode assignments</strong>
+	                    <p>Edit the configured switch positions here, then apply them from the same Receiver workflow.</p>
+	                  </div>
+	                  <StatusBadge tone={modeExerciseAssignments.length >= 2 ? 'success' : 'warning'}>
+	                    {modeExerciseAssignments.length >= 2 ? `${modeExerciseAssignments.length} distinct positions` : 'Review needed'}
+	                  </StatusBadge>
+	                </div>
+
+	                <div className="scoped-editor-grid">
+	                  {modeAssignmentParameters.map((parameter) => {
+	                    const draft = parameterDraftById.get(parameter.id)
+	                    const inputValue = editedValues[parameter.id] ?? String(parameter.value)
+
+	                    return (
+	                      <label key={parameter.id} className={`scoped-editor-field scoped-editor-field--${draft?.status ?? 'unchanged'}`}>
+	                        <span>{parameter.definition?.label ?? parameter.id}</span>
+	                        <select
+	                          value={inputValue}
+	                          onChange={(event) =>
+	                            setEditedValues((existing) => ({
+	                              ...existing,
+	                              [parameter.id]: event.target.value
+	                            }))
+	                          }
+	                        >
+	                          {(parameter.definition?.options ?? []).map((valueOption) => (
+	                            <option key={`${parameter.id}:${valueOption.value}`} value={String(valueOption.value)}>
+	                              {valueOption.label} ({valueOption.value})
+	                            </option>
+	                          ))}
+	                        </select>
+	                        <small>
+	                          {draft?.status === 'staged'
+	                            ? `Staged ${formatParameterDisplayValue(parameter, draft.nextValue)}`
+	                            : draft?.reason ?? `Current ${formatParameterDisplayValue(parameter, parameter.value)}`}
+	                        </small>
+	                      </label>
+	                    )
+	                  })}
+	                </div>
+
+	                <div className="config-pills">
+	                  {modeAssignments.map((assignment) => (
+	                    <span
+	                      key={assignment.slot}
+	                      className={assignment.slot === modeSwitchEstimate.estimatedSlot ? 'is-active' : undefined}
+	                    >
+	                      FLTMODE{assignment.slot} = {formatModeAssignment(assignment.value)}
+	                    </span>
+	                  ))}
+	                </div>
+	              </div>
+	            ) : null}
+
+	            <div className="rc-channel-grid">
               {rcChannelDisplays.map((channel) => (
                   <article
                     key={channel.channelNumber}
@@ -4006,10 +4858,10 @@ export function App() {
               </StatusBadge>
             </div>
 
-            <div className="telemetry-metric-grid">
-              <article className="telemetry-metric-card">
-                <span>Protocol</span>
-                <strong>{escSetup.pwmTypeLabel}</strong>
+	            <div className="telemetry-metric-grid">
+	              <article className="telemetry-metric-card">
+	                <span>Protocol</span>
+	                <strong>{escSetup.pwmTypeLabel}</strong>
               </article>
               {escSetup.relevantParameters.map((parameter) => (
                 parameter.value !== undefined ? (
@@ -4017,12 +4869,109 @@ export function App() {
                     <span>{parameter.id}</span>
                     <strong>{Number.isInteger(parameter.value) ? parameter.value : parameter.value.toFixed(2).replace(/\.?0+$/, '')}</strong>
                   </article>
-                ) : null
-              ))}
-            </div>
+	                ) : null
+	              ))}
+	            </div>
 
-            <ol className="switch-exercise-instructions">
-              {escCalibrationInstructions(escSetup).map((instruction) => (
+	            <div className="scoped-review-card scoped-review-card--compact">
+	              <div className="switch-exercise-card__header">
+	                <div>
+	                  <strong>ESC & output settings</strong>
+	                  <p>Adjust the key motor protocol and spin-threshold values directly from Outputs.</p>
+	                </div>
+	                <StatusBadge tone={toneForScopedDraftReview(outputReviewStagedDrafts.length, outputReviewInvalidDrafts.length)}>
+	                  {outputReviewInvalidDrafts.length > 0
+	                    ? `${outputReviewInvalidDrafts.length} invalid`
+	                    : outputReviewStagedDrafts.length > 0
+	                      ? `${outputReviewStagedDrafts.length} staged`
+	                      : 'in sync'}
+	                </StatusBadge>
+	              </div>
+
+	              <div className="scoped-editor-grid">
+	                {outputReviewParameters.map((parameter) => {
+	                  const draft = parameterDraftById.get(parameter.id)
+	                  const option = draft?.nextValue !== undefined
+	                    ? findParameterOption(parameter.definition, draft.nextValue)
+	                    : findParameterOption(parameter.definition, parameter.value)
+	                  const inputValue = editedValues[parameter.id] ?? String(parameter.value)
+
+	                  return (
+	                    <label key={parameter.id} className={`scoped-editor-field scoped-editor-field--${draft?.status ?? 'unchanged'}`}>
+	                      <span>{parameter.definition?.label ?? parameter.id}</span>
+	                      {parameter.definition?.options && parameter.definition.options.length > 0 ? (
+	                        <select
+	                          value={inputValue}
+	                          onChange={(event) =>
+	                            setEditedValues((existing) => ({
+	                              ...existing,
+	                              [parameter.id]: event.target.value
+	                            }))
+	                          }
+	                        >
+	                          {parameter.definition.options.map((valueOption) => (
+	                            <option key={`${parameter.id}:${valueOption.value}`} value={String(valueOption.value)}>
+	                              {valueOption.label} ({valueOption.value})
+	                            </option>
+	                          ))}
+	                        </select>
+	                      ) : (
+	                        <input
+	                          type="number"
+	                          step={parameter.definition?.step ?? 0.01}
+	                          min={parameter.definition?.minimum}
+	                          max={parameter.definition?.maximum}
+	                          value={inputValue}
+	                          onChange={(event) =>
+	                            setEditedValues((existing) => ({
+	                              ...existing,
+	                              [parameter.id]: event.target.value
+	                            }))
+	                          }
+	                        />
+	                      )}
+	                      <small>
+	                        {draft?.status === 'staged'
+	                          ? `Staged ${formatParameterDisplayValue(parameter, draft.nextValue)}`
+	                          : draft?.reason ??
+	                            `Current ${formatParameterDisplayValue(parameter, parameter.value)}${
+	                              option?.label && !draft ? ` · ${option.label}` : ''
+	                            }`}
+	                      </small>
+	                    </label>
+	                  )
+	                })}
+	              </div>
+
+	              <div className="switch-exercise-controls">
+	                <button
+	                  style={buttonStyle('primary')}
+	                  onClick={() =>
+	                    void handleApplyScopedParameterDrafts(outputReviewDraftEntries, 'outputs:apply', 'Outputs')
+	                  }
+	                  disabled={
+	                    busyAction !== undefined ||
+	                    outputReviewStagedDrafts.length === 0 ||
+	                    outputReviewInvalidDrafts.length > 0 ||
+	                    !canApplyDraftParameters
+	                  }
+	                >
+	                  {busyAction === 'outputs:apply' ? 'Applying…' : `Apply Output Changes (${outputReviewStagedDrafts.length})`}
+	                </button>
+	                <button
+	                  style={buttonStyle()}
+	                  onClick={() =>
+	                    handleDiscardScopedParameterDrafts(outputReviewDraftEntries.map((entry) => entry.id), 'output')
+	                  }
+	                  disabled={busyAction !== undefined || outputReviewDraftEntries.length === 0}
+	                >
+	                  Discard Output Changes
+	                </button>
+	              </div>
+	            </div>
+
+	            <ol className="switch-exercise-instructions">
+	              {escCalibrationInstructions(escSetup).map((instruction) => (
                 <li key={instruction}>{instruction}</li>
               ))}
             </ol>
@@ -4146,8 +5095,234 @@ export function App() {
       </div>
       ) : null}
 
+      {activeViewId === 'tuning' ? (
+      <section className="grid one-up">
+        <Panel
+          title="Tuning"
+          subtitle="Keep the first tuning pass small and reliable: adjust flight feel and acro rates here, then use Expert mode only when you need deeper controller work."
+        >
+          <div className="telemetry-stack">
+            <div className="telemetry-header">
+              <div>
+                <h3>Simple tuning baseline</h3>
+                <p>
+                  This surface intentionally stays narrow so setup and configuration remain the center of the product. Start with these grouped
+                  controls, save small changes, and fly-test before opening broader expert tuning.
+                </p>
+              </div>
+              <StatusBadge tone={toneForScopedDraftReview(tuningStagedDrafts.length, tuningInvalidDrafts.length)}>
+                {tuningInvalidDrafts.length > 0
+                  ? `${tuningInvalidDrafts.length} invalid`
+                  : tuningStagedDrafts.length > 0
+                    ? `${tuningStagedDrafts.length} staged`
+                    : 'in sync'}
+              </StatusBadge>
+            </div>
+
+            {parameterNotice ? (
+              <div className="parameter-review__notice">
+                <StatusBadge tone={parameterNotice.tone}>{parameterNotice.tone}</StatusBadge>
+                <p>{parameterNotice.text}</p>
+              </div>
+            ) : null}
+
+            <div className="telemetry-metric-grid">
+              <article className="telemetry-metric-card">
+                <span>Live mode</span>
+                <strong>{snapshot.vehicle?.flightMode ?? 'Unknown'}</strong>
+              </article>
+              <article className="telemetry-metric-card">
+                <span>RC link</span>
+                <strong>{snapshot.liveVerification.rcInput.verified ? 'Verified' : 'Not live'}</strong>
+              </article>
+              <article className="telemetry-metric-card">
+                <span>Staged tuning changes</span>
+                <strong>{tuningStagedDrafts.length}</strong>
+              </article>
+              <article className="telemetry-metric-card">
+                <span>Curated controls</span>
+                <strong>{tuningParameters.length}</strong>
+              </article>
+            </div>
+
+            <div className="tuning-card-grid">
+              <article className="tuning-card">
+                <div className="switch-exercise-card__header">
+                  <div>
+                    <strong>Flight feel</strong>
+                    <p>General stick feel for self-leveling flight, yaw authority, and maximum lean angle.</p>
+                  </div>
+                  <StatusBadge tone="neutral">{flightFeelParameters.length} controls</StatusBadge>
+                </div>
+
+                <div className="tuning-field-grid">
+                  {flightFeelParameters.map((parameter) => {
+                    const draft = parameterDraftById.get(parameter.id)
+                    const inputValue = tuningInputValue(parameter, editedValues)
+                    const displayValue =
+                      parameter.id === 'ANGLE_MAX'
+                        ? formatAngleMaxDegrees(draft?.nextValue ?? parameter.value)
+                        : formatParameterDisplayValue(parameter, draft?.nextValue ?? parameter.value)
+
+                    return (
+                      <label key={parameter.id} className={`scoped-editor-field scoped-editor-field--${draft?.status ?? 'unchanged'}`}>
+                        <span>{parameter.definition?.label ?? parameter.id}</span>
+                        <input
+                          type="number"
+                          min={parameter.id === 'ANGLE_MAX' ? 10 : parameter.definition?.minimum}
+                          max={parameter.id === 'ANGLE_MAX' ? 80 : parameter.definition?.maximum}
+                          step={parameter.id === 'ANGLE_MAX' ? 1 : parameter.definition?.step ?? 0.01}
+                          value={inputValue}
+                          onChange={(event) => stageTuningInputValue(parameter, event.target.value, setEditedValues)}
+                        />
+                        <small>
+                          {parameter.id === 'ANGLE_MAX'
+                            ? `Current ${formatAngleMaxDegrees(parameter.value)}. Staged ${displayValue}.`
+                            : draft?.status === 'staged'
+                              ? `Staged ${displayValue}`
+                              : draft?.reason ?? `Current ${displayValue}`}
+                        </small>
+                      </label>
+                    )
+                  })}
+                </div>
+
+                <ul className="output-note-list">
+                  <li>Lower smoothing makes the quad feel more immediate; higher smoothing makes it feel softer.</li>
+                  <li>Lean-angle changes are shown in degrees here, even though ArduPilot stores `ANGLE_MAX` in centidegrees.</li>
+                  <li>Increase yaw values slowly and confirm control feel with a short test flight between changes.</li>
+                </ul>
+              </article>
+
+              <article className="tuning-card">
+                <div className="switch-exercise-card__header">
+                  <div>
+                    <strong>Acro rates & expo</strong>
+                    <p>Core FPV-style acro handling only. PID banks and deeper controller tuning stay out of this first pass.</p>
+                  </div>
+                  <StatusBadge tone="neutral">{acroTuningParameters.length} controls</StatusBadge>
+                </div>
+
+                <div className="tuning-field-grid">
+                  {acroTuningParameters.map((parameter) => {
+                    const draft = parameterDraftById.get(parameter.id)
+                    const inputValue = tuningInputValue(parameter, editedValues)
+                    const displayValue = formatParameterDisplayValue(parameter, draft?.nextValue ?? parameter.value)
+
+                    return (
+                      <label key={parameter.id} className={`scoped-editor-field scoped-editor-field--${draft?.status ?? 'unchanged'}`}>
+                        <span>{parameter.definition?.label ?? parameter.id}</span>
+                        <input
+                          type="number"
+                          min={parameter.definition?.minimum}
+                          max={parameter.definition?.maximum}
+                          step={parameter.definition?.step ?? 0.01}
+                          value={inputValue}
+                          onChange={(event) => stageTuningInputValue(parameter, event.target.value, setEditedValues)}
+                        />
+                        <small>
+                          {draft?.status === 'staged'
+                            ? `Staged ${displayValue}`
+                            : draft?.reason ?? `Current ${displayValue}`}
+                        </small>
+                      </label>
+                    )
+                  })}
+                </div>
+
+                <div className="config-pills">
+                  <span>Roll/pitch rates</span>
+                  <span>Yaw rate</span>
+                  <span>Roll/pitch expo</span>
+                  <span>Yaw expo</span>
+                </div>
+
+                <ul className="output-note-list">
+                  <li>Rates set the maximum rotation speed in Acro mode.</li>
+                  <li>Expo softens the center stick area without reducing full-stick authority.</li>
+                  <li>If you need deeper tune changes than rates/expo, switch to Expert and use the raw parameter tools deliberately.</li>
+                </ul>
+              </article>
+            </div>
+
+            <div className="scoped-review-card">
+              <div className="switch-exercise-card__header">
+                <div>
+                  <strong>Tuning changes in review</strong>
+                  <p>Keep this first tuning surface simple: stage local drafts here, apply them here, and use Expert mode only for deeper follow-up.</p>
+                </div>
+                <StatusBadge tone={toneForScopedDraftReview(tuningStagedDrafts.length, tuningInvalidDrafts.length)}>
+                  {tuningInvalidDrafts.length > 0
+                    ? `${tuningInvalidDrafts.length} invalid`
+                    : tuningStagedDrafts.length > 0
+                      ? `${tuningStagedDrafts.length} staged`
+                      : 'in sync'}
+                </StatusBadge>
+              </div>
+
+              {tuningDraftEntries.length > 0 ? (
+                <div className="scoped-draft-list">
+                  {tuningDraftEntries.map((draft) => (
+                    <article key={draft.id} className={`scoped-draft-item scoped-draft-item--${draft.status}`}>
+                      <div className="scoped-draft-item__header">
+                        <strong>{draft.label}</strong>
+                        <StatusBadge tone={toneForParameterDraftStatus(draft.status)}>{draft.status}</StatusBadge>
+                      </div>
+                      <p>{draft.id}</p>
+                      <small>
+                        {draft.status === 'staged'
+                          ? `${formatParameterValue(draft.currentValue, draft.definition?.unit)} to ${formatParameterValue(
+                              draft.nextValue,
+                              draft.definition?.unit
+                            )}`
+                          : draft.reason ?? 'Draft matches the live controller value.'}
+                      </small>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="success-copy">No tuning changes are staged right now.</p>
+              )}
+
+              <div className="switch-exercise-controls">
+                <button
+                  style={buttonStyle('primary')}
+                  onClick={() => void handleApplyScopedParameterDrafts(tuningDraftEntries, 'tuning:apply', 'Tuning')}
+                  disabled={
+                    busyAction !== undefined ||
+                    tuningStagedDrafts.length === 0 ||
+                    tuningInvalidDrafts.length > 0 ||
+                    !canApplyDraftParameters
+                  }
+                >
+                  {busyAction === 'tuning:apply' ? 'Applying…' : `Apply Tuning Changes (${tuningStagedDrafts.length})`}
+                </button>
+                <button
+                  style={buttonStyle()}
+                  onClick={() => handleDiscardScopedParameterDrafts(tuningDraftEntries.map((entry) => entry.id), 'tuning')}
+                  disabled={busyAction !== undefined || tuningDraftEntries.length === 0}
+                >
+                  Discard Tuning Changes
+                </button>
+              </div>
+            </div>
+
+            <p className="telemetry-note">
+              This view is intentionally limited to high-value flight-feel and rate/expo controls. It is designed to be easy to expand later without
+              turning the app into a full raw-tuning surface by default.
+            </p>
+          </div>
+        </Panel>
+      </section>
+      ) : null}
+
       {activeViewId === 'parameters' ? (
       <Panel title="Parameter Editor" subtitle="Stage changes locally, review the diff, then apply them through the shared runtime.">
+        <div className="parameter-follow-up parameter-follow-up--warning">
+          <StatusBadge tone="warning">expert</StatusBadge>
+          <p>Raw parameter editing is an Expert surface. Use Setup, Ports, Receiver, Outputs, and Power for routine workflow changes first.</p>
+        </div>
+
         <div className="parameter-toolbar">
           <input
             value={parameterSearch}
@@ -4228,32 +5403,15 @@ export function App() {
             </div>
           ) : null}
 
-          {parameterFollowUp ? (
-            <div className="parameter-follow-up">
-              <StatusBadge tone={parameterFollowUp.requiresReboot ? 'warning' : 'neutral'}>
-                {parameterFollowUp.requiresReboot ? 'reboot' : 'refresh'}
-              </StatusBadge>
-              <p>{parameterFollowUp.text}</p>
-              <div className="button-row">
-                {parameterFollowUp.requiresReboot ? (
-                  <button
-                    style={buttonStyle()}
-                    onClick={() => void handleGuidedAction('reboot-autopilot')}
-                    disabled={busyAction !== undefined || !canRunGuidedAction(snapshot, 'reboot-autopilot')}
-                  >
-                    Request Reboot
-                  </button>
-                ) : null}
-                <button
-                  style={buttonStyle()}
-                  onClick={() => void handleGuidedAction('request-parameters')}
-                  disabled={parameterFollowUp.requiresReboot || busyAction !== undefined || !canRunGuidedAction(snapshot, 'request-parameters')}
-                >
-                  Pull Parameters
-                </button>
-              </div>
-            </div>
-          ) : null}
+	          {parameterFollowUp ? (
+	            <div className="parameter-follow-up">
+	              <StatusBadge tone={parameterFollowUp.requiresReboot ? 'warning' : 'neutral'}>
+	                {parameterFollowUp.requiresReboot ? 'reboot' : 'refresh'}
+	              </StatusBadge>
+	              <p>{parameterFollowUp.text}</p>
+	              <small>Use the sidebar session controls to complete the pending reboot or refresh.</small>
+	            </div>
+	          ) : null}
 
           {parameterDraftSummary.stagedCategories.length > 0 ? (
             <small className="parameter-review__hint">

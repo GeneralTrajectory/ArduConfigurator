@@ -109,6 +109,23 @@ export function deriveModeAssignments(snapshot: ConfiguratorSnapshot): ModeAssig
   return assignments
 }
 
+export function deriveModeExerciseAssignments(snapshot: ConfiguratorSnapshot): ModeAssignment[] {
+  const seenModeValues = new Set<number>()
+
+  return deriveModeAssignments(snapshot).filter((assignment) => {
+    if (assignment.value === undefined) {
+      return true
+    }
+
+    if (seenModeValues.has(assignment.value)) {
+      return false
+    }
+
+    seenModeValues.add(assignment.value)
+    return true
+  })
+}
+
 export function deriveModeSwitchEstimate(snapshot: ConfiguratorSnapshot): ModeSwitchEstimate {
   const channelNumber = getModeChannelNumber(snapshot)
   if (channelNumber === undefined) {
@@ -142,6 +159,15 @@ export function formatModeSlotLabel(snapshot: ConfiguratorSnapshot, slot: number
   return `Slot ${slot} (${formatArducopterFlightMode(configuredValue)})`
 }
 
+export function formatModeExerciseTargetLabel(snapshot: ConfiguratorSnapshot, slot: number | undefined): string {
+  if (slot === undefined) {
+    return 'Unknown flight-mode position'
+  }
+
+  const configuredValue = readRoundedParameter(snapshot, `FLTMODE${slot}`)
+  return `${formatArducopterFlightMode(configuredValue)} position`
+}
+
 export function createIdleModeSwitchExerciseState(): ModeSwitchExerciseState {
   return {
     status: 'idle',
@@ -161,11 +187,11 @@ export function createModeSwitchExerciseState(snapshot: ConfiguratorSnapshot): M
     return failModeSwitchExerciseState(createIdleModeSwitchExerciseState(), 'Mode switch channel is not configured.')
   }
 
-  const targetSlots = deriveModeAssignments(snapshot).map((assignment) => assignment.slot)
+  const targetSlots = deriveModeExerciseAssignments(snapshot).map((assignment) => assignment.slot)
   if (targetSlots.length < 2) {
     return failModeSwitchExerciseState(
       createIdleModeSwitchExerciseState(),
-      'At least two configured FLTMODEn positions are required for the mode switch exercise.'
+      'At least two distinct configured flight-mode positions are required for the mode switch exercise.'
     )
   }
 

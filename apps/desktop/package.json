@@ -8,6 +8,7 @@
     "build": "tsc -b tsconfig.json",
     "typecheck": "tsc -b tsconfig.json --pretty false",
     "app": "electron dist/electron-main.js",
+    "bridge:websocket": "npm run build && node dist/bridge-websocket.js",
     "probe:serial": "npm run build && node dist/probe-serial.js",
     "runtime:serial": "npm run build && node dist/runtime-serial.js",
     "runtime:sitl": "npm run build && node dist/runtime-sitl.js"

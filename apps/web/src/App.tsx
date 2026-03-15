@@ -79,6 +79,7 @@ import {
   formatArducopterVtxEnable,
   normalizeFirmwareMetadata,
   type AppViewId,
+  type NormalizedFirmwareMetadataBundle,
   type NormalizedPresetDefinition,
   type ParameterDefinition,
   type ParameterValueOption,
@@ -88,6 +89,7 @@ import { MavlinkSession, MavlinkV2Codec, createArduCopterMockScenario } from '@a
 import { MockTransport, WebSerialTransport, WebSocketTransport } from '@arduconfig/transport'
 import { KeyValueRow, Panel, StatusBadge, buttonStyle } from '@arduconfig/ui-kit'
 
+import { getDesktopBridge } from './desktop-bridge'
 import { createSavedSnapshot, loadStoredSnapshots, persistSnapshots, type SavedParameterSnapshot } from './snapshot-library'
 
 const actionLabels = {
@@ -199,6 +201,13 @@ interface GpsPeripheralViewModel {
   label: string
   parameter?: ParameterState
   value?: number
+}
+
+interface AdditionalSettingsGroup {
+  categoryId: string
+  categoryLabel: string
+  categoryDescription: string
+  parameters: ParameterState[]
 }
 
 interface ModeSwitchExerciseState {
@@ -662,8 +671,8 @@ function createRuntime(mode: TransportMode, websocketUrl: string): ArduPilotConf
     return new MockTransport('mock-arducopter', {
       initialFrames: scenario.initialFrames,
       respondToOutbound: scenario.respondToOutbound,
-      frameIntervalMs: 110,
-      responseDelayMs: 140,
+      frameIntervalMs: 12,
+      responseDelayMs: 20,
       chunkSize: 7
     })
   })()
@@ -1114,6 +1123,31 @@ function buildSerialPortViewModels(snapshot: ConfiguratorSnapshot): SerialPortVi
   })
 }
 
+function buildAdditionalSettingsGroups(
+  snapshot: ConfiguratorSnapshot,
+  metadataCatalog: NormalizedFirmwareMetadataBundle,
+  viewId: AppViewId,
+  excludedParameterIds: Set<string>
+): AdditionalSettingsGroup[] {
+  const parameterById = new Map(snapshot.parameters.map((parameter) => [parameter.id, parameter]))
+
+  return metadataCatalog.categories
+    .filter((category) => category.viewId === viewId)
+    .map((category) => {
+      const parameters = (metadataCatalog.parametersByCategory[category.id] ?? [])
+        .map((definition) => parameterById.get(definition.id))
+        .filter((parameter): parameter is ParameterState => parameter !== undefined && !excludedParameterIds.has(parameter.id))
+
+      return {
+        categoryId: category.id,
+        categoryLabel: category.label,
+        categoryDescription: category.description,
+        parameters
+      }
+    })
+    .filter((group) => group.parameters.length > 0)
+}
+
 function buildGpsPeripheralViewModels(snapshot: ConfiguratorSnapshot): GpsPeripheralViewModel[] {
   return [
     {
@@ -1421,6 +1455,7 @@ function downloadTextFile(filename: string, contents: string): void {
 
 export function App() {
   const metadataCatalog = useMemo(() => normalizeFirmwareMetadata(arducopterMetadata), [])
+  const desktopBridge = getDesktopBridge()
   const [transportMode, setTransportMode] = useState<TransportMode>('demo')
   const [websocketUrl, setWebsocketUrl] = useState(DEFAULT_WEBSOCKET_URL)
   const [sessionProfile, setSessionProfile] = useState<SessionProfile>('full-power')
@@ -1431,6 +1466,8 @@ export function App() {
   const [savedSnapshots, setSavedSnapshots] = useState<SavedParameterSnapshot[]>(loadStoredSnapshots)
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<string>()
   const [selectedPresetId, setSelectedPresetId] = useState<string>()
+  const [desktopSnapshotLibraryPath, setDesktopSnapshotLibraryPath] = useState<string>()
+  const [desktopSnapshotLibraryName, setDesktopSnapshotLibraryName] = useState<string>()
   const [snapshotLabelInput, setSnapshotLabelInput] = useState('')
   const [snapshotNoteInput, setSnapshotNoteInput] = useState('')
   const [snapshotTagsInput, setSnapshotTagsInput] = useState('')
@@ -1768,6 +1805,28 @@ export function App() {
     () => selectedSnapshotDiffEntries.filter((entry) => entry.status === 'invalid'),
     [selectedSnapshotDiffEntries]
   )
+  const selectedSnapshotRebootSensitiveCount = useMemo(
+    () => selectedSnapshotChangedEntries.filter((entry) => entry.definition?.rebootRequired).length,
+    [selectedSnapshotChangedEntries]
+  )
+  const protectedSnapshotCount = useMemo(
+    () => savedSnapshots.filter((savedSnapshot) => savedSnapshot.protected).length,
+    [savedSnapshots]
+  )
+  const selectedSnapshotStatusTone = selectedSnapshot
+    ? selectedSnapshotInvalidEntries.length > 0
+      ? 'danger'
+      : selectedSnapshotChangedEntries.length > 0
+        ? 'warning'
+        : 'success'
+    : 'neutral'
+  const selectedSnapshotStatusLabel = selectedSnapshot
+    ? selectedSnapshotInvalidEntries.length > 0
+      ? `${selectedSnapshotInvalidEntries.length} invalid`
+      : selectedSnapshotChangedEntries.length > 0
+        ? `${selectedSnapshotChangedEntries.length} diff`
+        : 'matched'
+    : 'none'
   const presetDefinitions = useMemo(() => metadataCatalog.presets, [metadataCatalog.presets])
   const presetGroups = useMemo(
     () => metadataCatalog.presetGroups.filter((group) => (metadataCatalog.presetsByGroup[group.id] ?? []).length > 0),
@@ -2070,10 +2129,144 @@ export function App() {
         .sort((left, right) => (parseServoOutputChannelNumber(left.id) ?? 99) - (parseServoOutputChannelNumber(right.id) ?? 99)),
     [snapshot.parameters]
   )
+  const setupAdditionalGroups = useMemo(
+    () => buildAdditionalSettingsGroups(snapshot, metadataCatalog, 'setup', new Set<string>()),
+    [metadataCatalog, snapshot]
+  )
+  const portsAdditionalGroups = useMemo(
+    () =>
+      buildAdditionalSettingsGroups(
+        snapshot,
+        metadataCatalog,
+        'ports',
+        new Set(snapshot.parameters.filter((parameter) => isPortsReviewParamId(parameter.id)).map((parameter) => parameter.id))
+      ),
+    [metadataCatalog, snapshot]
+  )
+  const receiverAdditionalGroups = useMemo(
+    () =>
+      buildAdditionalSettingsGroups(
+        snapshot,
+        metadataCatalog,
+        'receiver',
+        new Set(snapshot.parameters.filter((parameter) => isReceiverReviewParamId(parameter.id)).map((parameter) => parameter.id))
+      ),
+    [metadataCatalog, snapshot]
+  )
+  const powerAdditionalGroups = useMemo(
+    () =>
+      buildAdditionalSettingsGroups(
+        snapshot,
+        metadataCatalog,
+        'power',
+        new Set(snapshot.parameters.filter((parameter) => isPowerReviewParamId(parameter.id)).map((parameter) => parameter.id))
+      ),
+    [metadataCatalog, snapshot]
+  )
+  const outputAdditionalGroups = useMemo(
+    () =>
+      buildAdditionalSettingsGroups(
+        snapshot,
+        metadataCatalog,
+        'outputs',
+        new Set(
+          snapshot.parameters
+            .filter(
+              (parameter) =>
+                isOutputAssignmentParamId(parameter.id) ||
+                OUTPUT_REVIEW_PARAM_IDS.includes(parameter.id as (typeof OUTPUT_REVIEW_PARAM_IDS)[number]) ||
+                OUTPUT_NOTIFICATION_PARAM_IDS.includes(parameter.id as (typeof OUTPUT_NOTIFICATION_PARAM_IDS)[number])
+            )
+            .map((parameter) => parameter.id)
+        )
+      ),
+    [metadataCatalog, snapshot]
+  )
+  const setupAdditionalDraftEntries = useMemo(
+    () =>
+      parameterDraftEntries.filter((entry) =>
+        setupAdditionalGroups.some((group) => group.parameters.some((parameter) => parameter.id === entry.id))
+      ),
+    [parameterDraftEntries, setupAdditionalGroups]
+  )
+  const portsAdditionalDraftEntries = useMemo(
+    () =>
+      parameterDraftEntries.filter((entry) =>
+        portsAdditionalGroups.some((group) => group.parameters.some((parameter) => parameter.id === entry.id))
+      ),
+    [parameterDraftEntries, portsAdditionalGroups]
+  )
+  const receiverAdditionalDraftEntries = useMemo(
+    () =>
+      parameterDraftEntries.filter((entry) =>
+        receiverAdditionalGroups.some((group) => group.parameters.some((parameter) => parameter.id === entry.id))
+      ),
+    [parameterDraftEntries, receiverAdditionalGroups]
+  )
+  const powerAdditionalDraftEntries = useMemo(
+    () =>
+      parameterDraftEntries.filter((entry) =>
+        powerAdditionalGroups.some((group) => group.parameters.some((parameter) => parameter.id === entry.id))
+      ),
+    [parameterDraftEntries, powerAdditionalGroups]
+  )
+  const outputAdditionalDraftEntries = useMemo(
+    () =>
+      parameterDraftEntries.filter((entry) =>
+        outputAdditionalGroups.some((group) => group.parameters.some((parameter) => parameter.id === entry.id))
+      ),
+    [parameterDraftEntries, outputAdditionalGroups]
+  )
+  const setupAdditionalStagedDrafts = useMemo(
+    () => setupAdditionalDraftEntries.filter((entry) => entry.status === 'staged'),
+    [setupAdditionalDraftEntries]
+  )
+  const setupAdditionalInvalidDrafts = useMemo(
+    () => setupAdditionalDraftEntries.filter((entry) => entry.status === 'invalid'),
+    [setupAdditionalDraftEntries]
+  )
+  const portsAdditionalStagedDrafts = useMemo(
+    () => portsAdditionalDraftEntries.filter((entry) => entry.status === 'staged'),
+    [portsAdditionalDraftEntries]
+  )
+  const portsAdditionalInvalidDrafts = useMemo(
+    () => portsAdditionalDraftEntries.filter((entry) => entry.status === 'invalid'),
+    [portsAdditionalDraftEntries]
+  )
+  const receiverAdditionalStagedDrafts = useMemo(
+    () => receiverAdditionalDraftEntries.filter((entry) => entry.status === 'staged'),
+    [receiverAdditionalDraftEntries]
+  )
+  const receiverAdditionalInvalidDrafts = useMemo(
+    () => receiverAdditionalDraftEntries.filter((entry) => entry.status === 'invalid'),
+    [receiverAdditionalDraftEntries]
+  )
+  const powerAdditionalStagedDrafts = useMemo(
+    () => powerAdditionalDraftEntries.filter((entry) => entry.status === 'staged'),
+    [powerAdditionalDraftEntries]
+  )
+  const powerAdditionalInvalidDrafts = useMemo(
+    () => powerAdditionalDraftEntries.filter((entry) => entry.status === 'invalid'),
+    [powerAdditionalDraftEntries]
+  )
+  const outputAdditionalStagedDrafts = useMemo(
+    () => outputAdditionalDraftEntries.filter((entry) => entry.status === 'staged'),
+    [outputAdditionalDraftEntries]
+  )
+  const outputAdditionalInvalidDrafts = useMemo(
+    () => outputAdditionalDraftEntries.filter((entry) => entry.status === 'invalid'),
+    [outputAdditionalDraftEntries]
+  )
   const totalOutputInvalidDrafts =
-    outputReviewInvalidDrafts.length + outputNotificationInvalidDrafts.length + outputAssignmentInvalidDrafts.length
+    outputReviewInvalidDrafts.length +
+    outputNotificationInvalidDrafts.length +
+    outputAssignmentInvalidDrafts.length +
+    outputAdditionalInvalidDrafts.length
   const totalOutputStagedDrafts =
-    outputReviewStagedDrafts.length + outputNotificationStagedDrafts.length + outputAssignmentStagedDrafts.length
+    outputReviewStagedDrafts.length +
+    outputNotificationStagedDrafts.length +
+    outputAssignmentStagedDrafts.length +
+    outputAdditionalStagedDrafts.length
   const editedMspOptions = normalizeBitmaskValue(editedValues.MSP_OPTIONS, mspOptions)
   const editedNotificationLedTypes = normalizeBitmaskValue(editedValues.NTF_LED_TYPES, notificationLedTypes)
   const editedNotificationBuzzTypes = normalizeBitmaskValue(editedValues.NTF_BUZZ_TYPES, notificationBuzzTypes)
@@ -2413,6 +2606,44 @@ export function App() {
     }
   }
 
+  function clearDesktopSnapshotLibraryLink(): void {
+    setDesktopSnapshotLibraryPath(undefined)
+    setDesktopSnapshotLibraryName(undefined)
+  }
+
+  function applyParsedSnapshotImport(
+    parsedInput: ReturnType<typeof parseParameterSnapshotInput>,
+    fileNameHint?: string
+  ): void {
+    if (parsedInput.kind === 'library') {
+      const importedSnapshots = parsedInput.library.snapshots
+      setSavedSnapshots((current) => mergeSavedSnapshots(current, importedSnapshots))
+      setSelectedSnapshotId(importedSnapshots[0]?.id)
+      setSnapshotNotice({
+        tone: 'success',
+        text: `Imported ${importedSnapshots.length} snapshot(s) from library "${parsedInput.library.name}".`
+      })
+      return
+    }
+
+    const backup = parsedInput.backup
+    const savedSnapshot = createSavedSnapshot(backup, snapshotLabelInput || fileNameHint?.replace(/\.[^.]+$/, ''), 'imported', {
+      note: snapshotNoteInput,
+      tags: parseSnapshotTags(snapshotTagsInput),
+      protected: snapshotProtectedInput
+    })
+    setSavedSnapshots((current) => [savedSnapshot, ...current.filter((entry) => entry.id !== savedSnapshot.id)])
+    setSelectedSnapshotId(savedSnapshot.id)
+    setSnapshotLabelInput('')
+    setSnapshotNoteInput('')
+    setSnapshotTagsInput('')
+    setSnapshotProtectedInput(false)
+    setSnapshotNotice({
+      tone: 'success',
+      text: `Imported snapshot "${savedSnapshot.label}" with ${backup.parameterCount} parameters.`
+    })
+  }
+
   function handleCaptureLiveSnapshot(): void {
     if (snapshot.parameters.length === 0) {
       setSnapshotNotice({
@@ -2451,34 +2682,8 @@ export function App() {
     }
 
     try {
-      const parsedInput = parseParameterSnapshotInput(await file.text())
-
-      if (parsedInput.kind === 'library') {
-        const importedSnapshots = parsedInput.library.snapshots
-        setSavedSnapshots((current) => mergeSavedSnapshots(current, importedSnapshots))
-        setSelectedSnapshotId(importedSnapshots[0]?.id)
-        setSnapshotNotice({
-          tone: 'success',
-          text: `Imported ${importedSnapshots.length} snapshot(s) from library "${parsedInput.library.name}".`
-        })
-      } else {
-        const backup = parsedInput.backup
-        const savedSnapshot = createSavedSnapshot(backup, snapshotLabelInput || file.name.replace(/\.[^.]+$/, ''), 'imported', {
-          note: snapshotNoteInput,
-          tags: parseSnapshotTags(snapshotTagsInput),
-          protected: snapshotProtectedInput
-        })
-        setSavedSnapshots((current) => [savedSnapshot, ...current.filter((entry) => entry.id !== savedSnapshot.id)])
-        setSelectedSnapshotId(savedSnapshot.id)
-        setSnapshotLabelInput('')
-        setSnapshotNoteInput('')
-        setSnapshotTagsInput('')
-        setSnapshotProtectedInput(false)
-        setSnapshotNotice({
-          tone: 'success',
-          text: `Imported snapshot "${savedSnapshot.label}" with ${backup.parameterCount} parameters.`
-        })
-      }
+      clearDesktopSnapshotLibraryLink()
+      applyParsedSnapshotImport(parseParameterSnapshotInput(await file.text()), file.name)
     } catch (error) {
       setSnapshotNotice({
         tone: 'danger',
@@ -2496,6 +2701,92 @@ export function App() {
       tone: 'success',
       text: `Exported snapshot library with ${library.snapshots.length} saved snapshot(s).`
     })
+  }
+
+  async function handleOpenDesktopSnapshotFile(): Promise<void> {
+    if (!desktopBridge) {
+      return
+    }
+
+    try {
+      const file = await desktopBridge.openSnapshotFile()
+      if (!file) {
+        return
+      }
+
+      const parsedInput = parseParameterSnapshotInput(file.contents)
+      if (parsedInput.kind === 'library') {
+        setDesktopSnapshotLibraryPath(file.path)
+        setDesktopSnapshotLibraryName(parsedInput.library.name || file.name)
+      } else {
+        clearDesktopSnapshotLibraryLink()
+      }
+
+      applyParsedSnapshotImport(parsedInput, file.name)
+    } catch (error) {
+      setSnapshotNotice({
+        tone: 'danger',
+        text: error instanceof Error ? error.message : 'Failed to open a desktop snapshot file.'
+      })
+    }
+  }
+
+  async function handleSaveDesktopSnapshotLibrary(): Promise<void> {
+    if (!desktopBridge) {
+      return
+    }
+
+    try {
+      const library = createParameterSnapshotLibrary(desktopSnapshotLibraryName || 'Desktop Snapshot Library', savedSnapshots)
+      const savedFile = await desktopBridge.saveSnapshotLibrary({
+        title: desktopSnapshotLibraryPath ? 'Save Snapshot Library' : 'Save Snapshot Library As',
+        suggestedName: buildSnapshotLibraryFilename(),
+        contents: serializeParameterSnapshotLibrary(library),
+        existingPath: desktopSnapshotLibraryPath
+      })
+      if (!savedFile) {
+        return
+      }
+
+      setDesktopSnapshotLibraryPath(savedFile.path)
+      setDesktopSnapshotLibraryName(library.name)
+      setSnapshotNotice({
+        tone: 'success',
+        text: `Saved snapshot library to ${savedFile.name}.`
+      })
+    } catch (error) {
+      setSnapshotNotice({
+        tone: 'danger',
+        text: error instanceof Error ? error.message : 'Failed to save the desktop snapshot library.'
+      })
+    }
+  }
+
+  async function handleExportSelectedSnapshotToDesktop(): Promise<void> {
+    if (!desktopBridge || !selectedSnapshot) {
+      return
+    }
+
+    try {
+      const savedFile = await desktopBridge.saveSnapshotBackup({
+        title: 'Export Selected Snapshot',
+        suggestedName: buildSnapshotFilename(selectedSnapshot),
+        contents: serializeParameterBackup(selectedSnapshot.backup)
+      })
+      if (!savedFile) {
+        return
+      }
+
+      setSnapshotNotice({
+        tone: 'success',
+        text: `Exported snapshot "${selectedSnapshot.label}" to ${savedFile.name}.`
+      })
+    } catch (error) {
+      setSnapshotNotice({
+        tone: 'danger',
+        text: error instanceof Error ? error.message : 'Failed to export the selected snapshot to the desktop shell.'
+      })
+    }
   }
 
   function handleExportSelectedSnapshot(): void {
@@ -3927,17 +4218,17 @@ export function App() {
               label: view.label,
               description: view.description,
               badge:
-                receiverInvalidDrafts.length > 0
-                  ? `${receiverInvalidDrafts.length} invalid`
-                  : receiverStagedDrafts.length > 0
-                    ? `${receiverStagedDrafts.length} staged`
+                receiverInvalidDrafts.length + receiverAdditionalInvalidDrafts.length > 0
+                  ? `${receiverInvalidDrafts.length + receiverAdditionalInvalidDrafts.length} invalid`
+                  : receiverStagedDrafts.length + receiverAdditionalStagedDrafts.length > 0
+                    ? `${receiverStagedDrafts.length + receiverAdditionalStagedDrafts.length} staged`
                     : snapshot.liveVerification.rcInput.verified
                       ? 'live'
                       : 'pending',
               tone:
-                receiverInvalidDrafts.length > 0
+                receiverInvalidDrafts.length + receiverAdditionalInvalidDrafts.length > 0
                   ? 'danger'
-                  : receiverStagedDrafts.length > 0
+                  : receiverStagedDrafts.length + receiverAdditionalStagedDrafts.length > 0
                     ? 'warning'
                     : snapshot.liveVerification.rcInput.verified
                       ? 'success'
@@ -3948,8 +4239,16 @@ export function App() {
               id: view.id,
               label: view.label,
               description: view.description,
-              badge: portsStagedDrafts.length > 0 ? `${portsStagedDrafts.length} staged` : `${serialPortViewModels.length} ports`,
-              tone: portsInvalidDrafts.length > 0 ? 'danger' : portsStagedDrafts.length > 0 ? 'warning' : 'neutral'
+              badge:
+                portsStagedDrafts.length + portsAdditionalStagedDrafts.length > 0
+                  ? `${portsStagedDrafts.length + portsAdditionalStagedDrafts.length} staged`
+                  : `${serialPortViewModels.length} ports`,
+              tone:
+                portsInvalidDrafts.length + portsAdditionalInvalidDrafts.length > 0
+                  ? 'danger'
+                  : portsStagedDrafts.length + portsAdditionalStagedDrafts.length > 0
+                    ? 'warning'
+                    : 'neutral'
             }
           case 'outputs':
             return {
@@ -3977,17 +4276,17 @@ export function App() {
               label: view.label,
               description: view.description,
               badge:
-                powerInvalidDrafts.length > 0
-                  ? `${powerInvalidDrafts.length} invalid`
-                  : powerStagedDrafts.length > 0
-                    ? `${powerStagedDrafts.length} staged`
+                powerInvalidDrafts.length + powerAdditionalInvalidDrafts.length > 0
+                  ? `${powerInvalidDrafts.length + powerAdditionalInvalidDrafts.length} invalid`
+                  : powerStagedDrafts.length + powerAdditionalStagedDrafts.length > 0
+                    ? `${powerStagedDrafts.length + powerAdditionalStagedDrafts.length} staged`
                     : snapshot.preArmStatus.healthy
                       ? 'clear'
                       : `${snapshot.preArmStatus.issues.length} issues`,
               tone:
-                powerInvalidDrafts.length > 0
+                powerInvalidDrafts.length + powerAdditionalInvalidDrafts.length > 0
                   ? 'danger'
-                  : powerStagedDrafts.length > 0
+                  : powerStagedDrafts.length + powerAdditionalStagedDrafts.length > 0
                     ? 'warning'
                     : snapshot.preArmStatus.healthy
                       ? 'success'
@@ -4052,10 +4351,16 @@ export function App() {
       outputAssignmentInvalidDrafts.length,
       outputAssignmentStagedDrafts.length,
       outputMapping.motorOutputs.length,
+      portsAdditionalInvalidDrafts.length,
+      portsAdditionalStagedDrafts.length,
       portsInvalidDrafts.length,
       portsStagedDrafts.length,
+      powerAdditionalInvalidDrafts.length,
+      powerAdditionalStagedDrafts.length,
       powerInvalidDrafts.length,
       powerStagedDrafts.length,
+      receiverAdditionalInvalidDrafts.length,
+      receiverAdditionalStagedDrafts.length,
       receiverInvalidDrafts.length,
       receiverStagedDrafts.length,
       serialPortViewModels.length,
@@ -4089,6 +4394,112 @@ export function App() {
     }
 
     return metadataCatalog.categoryById[categoryId]?.label ?? categoryId
+  }
+
+  function renderMetadataParameterField(parameter: ParameterState) {
+    const draft = parameterDraftById.get(parameter.id)
+    const inputValue = editedValues[parameter.id] ?? String(parameter.value)
+
+    return (
+      <label key={parameter.id} className={`scoped-editor-field scoped-editor-field--${draft?.status ?? 'unchanged'}`}>
+        <span>{parameter.definition?.label ?? parameter.id}</span>
+        {parameter.definition?.options && parameter.definition.options.length > 0 ? (
+          <select
+            value={inputValue}
+            onChange={(event) =>
+              setEditedValues((existing) => ({
+                ...existing,
+                [parameter.id]: event.target.value
+              }))
+            }
+          >
+            {parameter.definition.options.map((valueOption) => (
+              <option key={`${parameter.id}:${valueOption.value}`} value={String(valueOption.value)}>
+                {valueOption.label}
+                {valueOption.description ? ` · ${valueOption.description}` : ''}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            type="number"
+            min={parameter.definition?.minimum}
+            max={parameter.definition?.maximum}
+            step={parameter.definition?.step ?? 1}
+            value={inputValue}
+            onChange={(event) =>
+              setEditedValues((existing) => ({
+                ...existing,
+                [parameter.id]: event.target.value
+              }))
+            }
+          />
+        )}
+        <small>
+          {draft?.status === 'staged'
+            ? `Staged ${formatParameterDisplayValue(parameter, draft.nextValue)}`
+            : draft?.reason ??
+              `Current ${formatParameterDisplayValue(parameter, parameter.value)}${parameter.definition?.rebootRequired ? ' · reboot after apply' : ''}`}
+        </small>
+      </label>
+    )
+  }
+
+  function renderAdditionalSettingsCard(
+    title: string,
+    description: string,
+    groups: AdditionalSettingsGroup[],
+    draftEntries: ParameterDraftEntry[],
+    stagedDrafts: ParameterDraftEntry[],
+    invalidDrafts: ParameterDraftEntry[],
+    applyActionId: string,
+    applyLabel: string,
+    discardScope: string
+  ) {
+    if (groups.length === 0) {
+      return null
+    }
+
+    return (
+      <div className="scoped-review-card scoped-review-card--compact">
+        <div className="switch-exercise-card__header">
+          <div>
+            <strong>{title}</strong>
+            <p>{description}</p>
+          </div>
+          <StatusBadge tone={toneForScopedDraftReview(stagedDrafts.length, invalidDrafts.length)}>
+            {invalidDrafts.length > 0 ? `${invalidDrafts.length} invalid` : stagedDrafts.length > 0 ? `${stagedDrafts.length} staged` : 'in sync'}
+          </StatusBadge>
+        </div>
+
+        {groups.map((group) => (
+          <div key={group.categoryId} className="metadata-settings-section">
+            <div className="metadata-settings-section__header">
+              <strong>{group.categoryLabel}</strong>
+              <p>{group.categoryDescription}</p>
+            </div>
+            <div className="scoped-editor-grid">{group.parameters.map((parameter) => renderMetadataParameterField(parameter))}</div>
+          </div>
+        ))}
+
+        <div className="switch-exercise-controls">
+          <button
+            style={buttonStyle('primary')}
+            onClick={() => void handleApplyScopedParameterDrafts(draftEntries, applyActionId, title)}
+            disabled={busyAction !== undefined || stagedDrafts.length === 0 || invalidDrafts.length > 0 || !canApplyDraftParameters}
+          >
+            {busyAction === applyActionId ? 'Applying…' : `${applyLabel} (${stagedDrafts.length})`}
+          </button>
+          <button
+            style={buttonStyle()}
+            onClick={() => handleDiscardScopedParameterDrafts(draftEntries.map((entry) => entry.id), discardScope)}
+            disabled={busyAction !== undefined || draftEntries.length === 0}
+          >
+            Discard Additional Changes
+          </button>
+        </div>
+      </div>
+    )
   }
 
   useEffect(() => {
@@ -4247,6 +4658,7 @@ export function App() {
                     spellCheck={false}
                     placeholder={DEFAULT_WEBSOCKET_URL}
                   />
+                  <small>Run `npm run bridge:websocket -- --demo` or `npm run bridge:websocket -- --path=/dev/tty.usbmodemXXXX` to use the bundled local bridge.</small>
                 </label>
               ) : null}
 	              <div className="button-row">
@@ -4315,6 +4727,83 @@ export function App() {
 	              ) : null}
 	            </div>
 	          </Panel>
+
+          <Panel
+            title="Baseline Snapshot"
+            subtitle="The selected snapshot becomes the active compare and restore baseline across the whole configurator."
+          >
+            <div className="workspace-sidebar__stack">
+              {selectedSnapshot ? (
+                <div className="baseline-summary">
+                  <div className="baseline-summary__header">
+                    <div>
+                      <strong>{selectedSnapshot.label}</strong>
+                      <small>{formatSnapshotTimestamp(selectedSnapshot.capturedAt)}</small>
+                    </div>
+                    <StatusBadge tone={selectedSnapshotStatusTone}>{selectedSnapshotStatusLabel}</StatusBadge>
+                  </div>
+
+                  <div className="config-pills">
+                    <span>{selectedSnapshot.source === 'captured' ? 'captured here' : 'imported'}</span>
+                    <span>{selectedSnapshot.backup.parameterCount} params</span>
+                    {selectedSnapshot.protected ? <span className="is-target">protected</span> : null}
+                    {selectedSnapshot.tags.slice(0, 2).map((tag) => (
+                      <span key={`${selectedSnapshot.id}:sidebar:${tag}`}>#{tag}</span>
+                    ))}
+                  </div>
+
+                  <div className="baseline-summary__metrics">
+                    <article>
+                      <span>Saved</span>
+                      <strong>{savedSnapshots.length}</strong>
+                    </article>
+                    <article>
+                      <span>Protected</span>
+                      <strong>{protectedSnapshotCount}</strong>
+                    </article>
+                    <article>
+                      <span>Drift</span>
+                      <strong>{selectedSnapshotChangedEntries.length}</strong>
+                    </article>
+                    <article>
+                      <span>Reboot</span>
+                      <strong>{selectedSnapshotRebootSensitiveCount}</strong>
+                    </article>
+                  </div>
+
+                  <p className="baseline-summary__text">
+                    {selectedSnapshotChangedEntries.length > 0
+                      ? 'Live controller values currently differ from this baseline. Review the diff before making more changes.'
+                      : 'Live controller values currently match this baseline snapshot.'}
+                  </p>
+
+                  {selectedSnapshot.note ? <p className="baseline-summary__note">{selectedSnapshot.note}</p> : null}
+                </div>
+              ) : (
+                <div className="workspace-mode-summary workspace-mode-summary--muted">
+                  <StatusBadge tone="neutral">no baseline</StatusBadge>
+                  <p>
+                    No snapshot is selected yet. Capture or import one from the Snapshots view before riskier configuration changes or preset applies.
+                  </p>
+                </div>
+              )}
+
+              <div className="button-row">
+                <button style={buttonStyle('primary')} onClick={() => setActiveViewId('snapshots')}>
+                  {selectedSnapshot ? 'Open Snapshot Library' : 'Open Snapshots'}
+                </button>
+                {selectedSnapshotChangedEntries.length > 0 ? (
+                  <button style={buttonStyle()} onClick={() => setActiveViewId('snapshots')}>
+                    Review Restore Diff
+                  </button>
+                ) : null}
+              </div>
+
+              <p className="workspace-sidebar__hint">
+                Selecting a snapshot in the library updates this baseline everywhere else in the app.
+              </p>
+            </div>
+          </Panel>
 
           <Panel
             title="Workspace Mode"
@@ -5209,6 +5698,18 @@ export function App() {
                 </div>
               ) : null}
 
+              {renderAdditionalSettingsCard(
+                'Additional port settings',
+                'These metadata-backed port and peripheral settings are kept local to the Ports view so common setup work does not spill into raw Parameters.',
+                portsAdditionalGroups,
+                portsAdditionalDraftEntries,
+                portsAdditionalStagedDrafts,
+                portsAdditionalInvalidDrafts,
+                'ports:additional',
+                'Apply Additional Port Changes',
+                'additional port settings'
+              )}
+
 	            <div className="switch-exercise-controls">
 	              <button
 	                style={buttonStyle('primary')}
@@ -5866,6 +6367,18 @@ export function App() {
 	              </div>
 	            ) : null}
 
+              {renderAdditionalSettingsCard(
+                'Additional receiver settings',
+                'These metadata-backed receiver and mode settings extend the Receiver workflow without forcing you into raw Parameters.',
+                receiverAdditionalGroups,
+                receiverAdditionalDraftEntries,
+                receiverAdditionalStagedDrafts,
+                receiverAdditionalInvalidDrafts,
+                'receiver:additional',
+                'Apply Additional Receiver Changes',
+                'additional receiver settings'
+              )}
+
 	            <div className="rc-channel-grid">
               {rcChannelDisplays.map((channel) => (
                   <article
@@ -6275,6 +6788,18 @@ export function App() {
                 </button>
               </div>
             </div>
+
+            {renderAdditionalSettingsCard(
+              'Additional power & failsafe settings',
+              'These metadata-backed safety settings extend the Power view so advanced battery and RC-loss behavior can stay in-context.',
+              powerAdditionalGroups,
+              powerAdditionalDraftEntries,
+              powerAdditionalStagedDrafts,
+              powerAdditionalInvalidDrafts,
+              'power:additional',
+              'Apply Additional Power Changes',
+              'additional power settings'
+            )}
 
             <div className="prearm-card">
               <div className="switch-exercise-card__header">
@@ -6758,6 +7283,18 @@ export function App() {
             </div>
           ) : null}
 
+          {renderAdditionalSettingsCard(
+            'Additional output settings',
+            'These metadata-backed output and airframe settings extend Outputs without forcing routine configuration back into raw Parameters.',
+            outputAdditionalGroups,
+            outputAdditionalDraftEntries,
+            outputAdditionalStagedDrafts,
+            outputAdditionalInvalidDrafts,
+            'outputs:additional',
+            'Apply Additional Output Changes',
+            'additional output settings'
+          )}
+
           <div className="motor-test-card">
             <div className="switch-exercise-card__header">
               <div>
@@ -7173,6 +7710,18 @@ export function App() {
             </article>
           ))}
         </div>
+
+        {renderAdditionalSettingsCard(
+          'Additional setup settings',
+          'These metadata-backed sensor and setup settings stay in the Setup view so board orientation and related configuration do not require raw Parameters.',
+          setupAdditionalGroups,
+          setupAdditionalDraftEntries,
+          setupAdditionalStagedDrafts,
+          setupAdditionalInvalidDrafts,
+          'setup:additional',
+          'Apply Additional Setup Changes',
+          'additional setup settings'
+        )}
         </Panel>
       </div>
       ) : null}
@@ -7208,6 +7757,11 @@ export function App() {
                     : `${savedSnapshots.length} saved`}
               </StatusBadge>
             </div>
+
+            <p className="telemetry-note">
+              The selected snapshot below becomes the active baseline for the whole app. The sidebar reflects the same baseline, drift count, and
+              restore state across every product view.
+            </p>
 
             <div className="snapshot-capture-row">
               <label className="scoped-editor-field">
@@ -7272,6 +7826,54 @@ export function App() {
               Browser snapshots stay local by default, but `Export Library` writes a portable snapshot-library file that the desktop CLI and later web
               sessions can import directly.
             </p>
+
+            {desktopBridge ? (
+              <div className="desktop-snapshot-workspace">
+                <div className="telemetry-header">
+                  <div>
+                    <h3>Desktop snapshot files</h3>
+                    <p>
+                      The Electron shell can open and save snapshot libraries through native file dialogs while keeping compare and restore in this same
+                      browser-first workflow.
+                    </p>
+                  </div>
+                  <StatusBadge tone={desktopSnapshotLibraryPath ? 'success' : 'neutral'}>
+                    {desktopSnapshotLibraryPath ? 'linked library' : 'local only'}
+                  </StatusBadge>
+                </div>
+
+                {desktopSnapshotLibraryPath ? (
+                  <div className="config-pills">
+                    <span>{desktopSnapshotLibraryName ?? 'Desktop snapshot library'}</span>
+                    <span>{desktopSnapshotLibraryPath}</span>
+                  </div>
+                ) : (
+                  <p className="telemetry-note">
+                    No desktop library file is linked yet. Open one from disk to keep this browser library tied to a named desktop file.
+                  </p>
+                )}
+
+                <div className="button-row">
+                  <button style={buttonStyle()} onClick={() => void handleOpenDesktopSnapshotFile()} disabled={busyAction !== undefined}>
+                    Open from Desktop…
+                  </button>
+                  <button
+                    style={buttonStyle()}
+                    onClick={() => void handleSaveDesktopSnapshotLibrary()}
+                    disabled={busyAction !== undefined || savedSnapshots.length === 0}
+                  >
+                    {desktopSnapshotLibraryPath ? 'Save Library' : 'Save Library to Desktop…'}
+                  </button>
+                  <button
+                    style={buttonStyle()}
+                    onClick={() => void handleExportSelectedSnapshotToDesktop()}
+                    disabled={busyAction !== undefined || !selectedSnapshot}
+                  >
+                    Export Selected to Desktop…
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
             {snapshotNotice ? (
               <div className="parameter-review__notice">

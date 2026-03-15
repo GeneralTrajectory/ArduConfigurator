@@ -42,6 +42,22 @@ test('metadata catalog exposes OSD and notification parameters on product surfac
   assert.equal(metadata.parameters.NTF_BUZZ_VOLUME.unit, '%')
 })
 
+test('metadata catalog exposes advanced setup, receiver, and failsafe parameters on product surfaces', () => {
+  const metadata = normalizeFirmwareMetadata(arducopterMetadata)
+
+  assert.equal(metadata.parameters.COMPASS_USE2.categoryDefinition.viewId, 'setup')
+  assert.equal(metadata.parameters.COMPASS_USE3.categoryDefinition.viewId, 'setup')
+
+  assert.equal(metadata.parameters.RC_SPEED.categoryDefinition.viewId, 'receiver')
+  assert.equal(metadata.parameters.RC_OPTIONS.categoryDefinition.viewId, 'receiver')
+  assert.equal(metadata.parameters.RC_SPEED.unit, 'Hz')
+
+  assert.equal(metadata.parameters.DISARM_DELAY.categoryDefinition.viewId, 'power')
+  assert.equal(metadata.parameters.BATT_LOW_TIMER.categoryDefinition.viewId, 'power')
+  assert.equal(metadata.parameters.RC_FS_TIMEOUT.categoryDefinition.viewId, 'power')
+  assert.equal(metadata.parameters.FS_OPTIONS.categoryDefinition.viewId, 'power')
+})
+
 test('VTX enable formatting stays user-facing', () => {
   assert.equal(formatArducopterVtxEnable(0), 'Disabled')
   assert.equal(formatArducopterVtxEnable(1), 'Enabled')

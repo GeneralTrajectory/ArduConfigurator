@@ -1,16 +1,22 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { basename } from 'node:path'
+import { readFile, writeFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 
 import { desktopPlatformManifest } from './platform.js'
 import { startHostedWebUi, type HostedWebUi } from './web-ui-server.js'
 
 const DESKTOP_DEV_SERVER_URL = process.env.ARDUCONFIG_DESKTOP_DEV_SERVER_URL
 const DESKTOP_DEVTOOLS = process.env.ARDUCONFIG_DESKTOP_DEVTOOLS === '1'
+const PRELOAD_PATH = fileURLToPath(new URL('./preload.js', import.meta.url))
 
 let hostedWebUi: HostedWebUi | undefined
 
 app.name = 'ArduConfigurator'
 
 void app.whenReady().then(async () => {
+  registerDesktopSnapshotFileHandlers()
   hostedWebUi = DESKTOP_DEV_SERVER_URL ? undefined : await startHostedWebUi()
   await createMainWindow(hostedWebUi?.url ?? DESKTOP_DEV_SERVER_URL ?? 'http://127.0.0.1:4173')
 
@@ -43,8 +49,9 @@ async function createMainWindow(startUrl: string): Promise<BrowserWindow> {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true,
-      spellcheck: false
+      sandbox: false,
+      spellcheck: false,
+      preload: PRELOAD_PATH
     }
   })
 
@@ -87,4 +94,69 @@ function configurePermissions(window: BrowserWindow): void {
 
 function isAllowedOrigin(origin: string, allowedOriginPrefixes: string[]): boolean {
   return allowedOriginPrefixes.some((prefix) => origin.startsWith(prefix))
+}
+
+function registerDesktopSnapshotFileHandlers(): void {
+  ipcMain.handle('desktop:snapshots:open-file', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Open Snapshot or Library',
+      properties: ['openFile'],
+      filters: [
+        { name: 'JSON files', extensions: ['json'] },
+        { name: 'All files', extensions: ['*'] }
+      ]
+    })
+    if (result.canceled || result.filePaths.length === 0) {
+      return undefined
+    }
+
+    const targetPath = result.filePaths[0]
+    return {
+      path: targetPath,
+      name: basename(targetPath),
+      contents: await readFile(targetPath, 'utf8')
+    }
+  })
+
+  ipcMain.handle('desktop:snapshots:save-library', async (_event, request: DesktopSaveFileRequest) =>
+    saveTextFileWithDialog(request, 'arduconfig-snapshot-library.json')
+  )
+  ipcMain.handle('desktop:snapshots:save-backup', async (_event, request: DesktopSaveFileRequest) =>
+    saveTextFileWithDialog(request, 'arduconfig-snapshot.json')
+  )
+}
+
+interface DesktopSaveFileRequest {
+  title: string
+  suggestedName: string
+  contents: string
+  existingPath?: string
+}
+
+async function saveTextFileWithDialog(
+  request: DesktopSaveFileRequest,
+  fallbackName: string
+): Promise<{ path: string; name: string } | undefined> {
+  const targetPath =
+    request.existingPath ||
+    (
+      await dialog.showSaveDialog({
+        title: request.title,
+        defaultPath: request.suggestedName.trim() || fallbackName,
+        filters: [
+          { name: 'JSON files', extensions: ['json'] },
+          { name: 'All files', extensions: ['*'] }
+        ]
+      })
+    ).filePath
+
+  if (!targetPath) {
+    return undefined
+  }
+
+  await writeFile(targetPath, request.contents, 'utf8')
+  return {
+    path: targetPath,
+    name: basename(targetPath)
+  }
 }

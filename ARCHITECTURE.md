@@ -94,6 +94,7 @@ The web app is intentionally the main place where end users should be able to co
 The desktop side currently provides:
 
 - a thin Electron shell that hosts the same web UI over localhost
+- native snapshot-library open/save/export dialogs inside the shared `Snapshots` UI
 - native serial access
 - live FC runtime tooling
 - true SITL launch/attach tooling
@@ -134,10 +135,9 @@ Browser and desktop validation against real hardware for the workflows that matt
 
 ## Current Architectural Gaps
 
-- no bundled WebSocket bridge/server path yet
 - desktop packaging/distribution not built yet
 - metadata coverage still too thin overall
-- snapshot-library management is still split between strong web UI and desktop CLI tooling
+- snapshot-library management now shares one UI model across web and desktop, but desktop packaging/native polish is still incomplete
 
 ## Design Constraints
 

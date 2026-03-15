@@ -16,8 +16,8 @@ The repository is beyond prototype stage, but not finished.
 What is already real:
 
 - browser `Web Serial` connection
-- browser `WebSocket` connection to an external MAVLink-over-WebSocket endpoint
-- a thin Electron desktop shell that hosts the same web app over localhost
+- browser `WebSocket` connection to either an external MAVLink-over-WebSocket endpoint or the bundled local bridge started with `npm run bridge:websocket`
+- a thin Electron desktop shell that hosts the same web app over localhost, including native snapshot-library open/save/export dialogs inside the shared `Snapshots` view
 - real MAVLink v2 framing/parsing
 - shared runtime for sync, writes, guided setup, snapshots, and presets
 - live FC validation in the browser for `Ports`, `Receiver`, `Outputs`, `Snapshots`, `Presets`, and guarded motor test
@@ -27,7 +27,6 @@ What is still missing:
 
 - broader metadata/configuration coverage
 - packaging/distribution for the desktop shell
-- a bundled WebSocket bridge/server path
 - packaging/release flow
 - final license selection
 

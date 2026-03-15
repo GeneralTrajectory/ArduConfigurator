@@ -116,6 +116,82 @@ textarea {
   color: #96a4bd;
 }
 
+.workspace-sidebar__hint {
+  margin: 0;
+  color: #96a4bd;
+  line-height: 1.5;
+}
+
+.baseline-summary {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid #243049;
+  background:
+    radial-gradient(circle at top right, rgba(97, 218, 251, 0.08), transparent 42%),
+    #0f172a;
+}
+
+.baseline-summary__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.baseline-summary__header strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.baseline-summary__header small {
+  color: #96a4bd;
+}
+
+.baseline-summary__metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.baseline-summary__metrics article {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid #243049;
+  background: rgba(16, 26, 42, 0.72);
+}
+
+.baseline-summary__metrics span {
+  color: #96a4bd;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.baseline-summary__metrics strong {
+  font-size: 18px;
+}
+
+.baseline-summary__text,
+.baseline-summary__note {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.baseline-summary__text {
+  color: #d3dced;
+}
+
+.baseline-summary__note {
+  color: #96a4bd;
+}
+
 .mode-toggle {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1024,6 +1100,27 @@ textarea {
   text-transform: none;
 }
 
+.metadata-settings-section {
+  display: grid;
+  gap: 12px;
+}
+
+.metadata-settings-section + .metadata-settings-section {
+  padding-top: 4px;
+  border-top: 1px solid rgba(36, 48, 73, 0.85);
+}
+
+.metadata-settings-section__header {
+  display: grid;
+  gap: 4px;
+}
+
+.metadata-settings-section__header p {
+  margin: 0;
+  color: #96a4bd;
+  line-height: 1.5;
+}
+
 .scoped-editor-field--compact {
   padding: 10px 12px;
 }
@@ -1085,6 +1182,17 @@ textarea {
   flex-wrap: wrap;
   gap: 10px;
   align-content: start;
+}
+
+.desktop-snapshot-workspace {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid #243049;
+  background:
+    radial-gradient(circle at top right, rgba(97, 218, 251, 0.06), transparent 40%),
+    #101a2a;
 }
 
 .snapshot-protected-toggle {
@@ -1871,6 +1979,7 @@ textarea {
   }
 
   .rc-channel-grid,
+  .baseline-summary__metrics,
   .telemetry-metric-grid,
   .mode-toggle,
   .rc-range-axis-grid,

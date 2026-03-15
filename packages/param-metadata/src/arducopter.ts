@@ -154,6 +154,21 @@ const rssiChannelNotes = [
   'Keep the low/high values matched to the actual receiver output range.'
 ]
 
+const advancedReceiverNotes = [
+  'These receiver-link settings are more advanced than channel mapping and RSSI. Change them only when the actual radio link requires it.',
+  'After changing receiver link timing or options, recheck live RC input and failsafe behavior on the bench.'
+]
+
+const advancedFailsafeNotes = [
+  'These settings change how long the controller waits and how it behaves when RC or battery problems occur.',
+  'After changing advanced failsafe behavior, recheck pre-arm state and do another bench review before flight.'
+]
+
+const disarmDelayNotes = [
+  'This controls how long the vehicle waits before auto-disarming after landing or inactivity.',
+  'Keep it long enough to avoid nuisance disarms during setup, but not so long that a landed vehicle stays armed unnecessarily.'
+]
+
 const notificationLedNotes = [
   'Notification LED drivers only work when the chosen LED type matches the actual hardware and any required output assignment.',
   'After changing LED types or string length, bench-check the indicator behavior before flight.'
@@ -574,6 +589,24 @@ export const arducopterMetadata: FirmwareMetadataBundle = {
       maximum: 1,
       options: enabledDisabledOptions
     },
+    COMPASS_USE2: {
+      id: 'COMPASS_USE2',
+      label: 'Compass 2 Enabled',
+      description: 'Secondary compass enable state.',
+      category: 'sensors',
+      minimum: 0,
+      maximum: 1,
+      options: enabledDisabledOptions
+    },
+    COMPASS_USE3: {
+      id: 'COMPASS_USE3',
+      label: 'Compass 3 Enabled',
+      description: 'Tertiary compass enable state.',
+      category: 'sensors',
+      minimum: 0,
+      maximum: 1,
+      options: enabledDisabledOptions
+    },
     ...buildSerialPortParameterDefinitions(8),
     GPS_TYPE: {
       id: 'GPS_TYPE',
@@ -783,6 +816,17 @@ export const arducopterMetadata: FirmwareMetadataBundle = {
       step: 1,
       notes: batteryArmNotes
     },
+    DISARM_DELAY: {
+      id: 'DISARM_DELAY',
+      label: 'Auto Disarm Delay',
+      description: 'Delay before the vehicle automatically disarms after landing or inactivity.',
+      category: 'power',
+      unit: 's',
+      minimum: 0,
+      maximum: 127,
+      step: 1,
+      notes: disarmDelayNotes
+    },
     BATT_FS_VOLTSRC: {
       id: 'BATT_FS_VOLTSRC',
       label: 'Failsafe Voltage Source',
@@ -812,6 +856,17 @@ export const arducopterMetadata: FirmwareMetadataBundle = {
       minimum: 0,
       step: 1,
       notes: batteryThresholdNotes
+    },
+    BATT_LOW_TIMER: {
+      id: 'BATT_LOW_TIMER',
+      label: 'Low Battery Hold Time',
+      description: 'Time the low-battery threshold must remain active before the low-battery failsafe triggers.',
+      category: 'failsafe',
+      unit: 's',
+      minimum: 0,
+      maximum: 120,
+      step: 1,
+      notes: advancedFailsafeNotes
     },
     BATT_FS_LOW_ACT: {
       id: 'BATT_FS_LOW_ACT',
@@ -976,6 +1031,27 @@ export const arducopterMetadata: FirmwareMetadataBundle = {
       step: 1,
       notes: rcFailsafeThresholdNotes
     },
+    RC_FS_TIMEOUT: {
+      id: 'RC_FS_TIMEOUT',
+      label: 'RC Failsafe Timeout',
+      description: 'Time ArduPilot waits after losing valid RC input before triggering RC failsafe behavior.',
+      category: 'failsafe',
+      unit: 's',
+      minimum: 0.1,
+      maximum: 10,
+      step: 0.1,
+      notes: advancedFailsafeNotes
+    },
+    FS_OPTIONS: {
+      id: 'FS_OPTIONS',
+      label: 'Advanced Failsafe Options',
+      description: 'Advanced failsafe behavior bitmask.',
+      category: 'failsafe',
+      minimum: 0,
+      maximum: 65535,
+      step: 1,
+      notes: advancedFailsafeNotes
+    },
     RCMAP_ROLL: {
       id: 'RCMAP_ROLL',
       label: 'Roll Channel Map',
@@ -1061,6 +1137,27 @@ export const arducopterMetadata: FirmwareMetadataBundle = {
       maximum: 2200,
       step: 1,
       notes: rssiChannelNotes
+    },
+    RC_SPEED: {
+      id: 'RC_SPEED',
+      label: 'RC Input Rate',
+      description: 'Maximum RC input update rate accepted from the receiver link.',
+      category: 'radio',
+      unit: 'Hz',
+      minimum: 1,
+      maximum: 500,
+      step: 1,
+      notes: advancedReceiverNotes
+    },
+    RC_OPTIONS: {
+      id: 'RC_OPTIONS',
+      label: 'Receiver Options',
+      description: 'Advanced RC input and receiver-behavior bitmask.',
+      category: 'radio',
+      minimum: 0,
+      maximum: 65535,
+      step: 1,
+      notes: advancedReceiverNotes
     },
     RC1_MIN: {
       id: 'RC1_MIN',

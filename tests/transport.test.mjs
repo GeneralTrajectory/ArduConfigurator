@@ -3,8 +3,9 @@ import test from 'node:test'
 
 import { ArduPilotConfiguratorRuntime } from '../packages/ardupilot-core/dist/index.js'
 import { arducopterMetadata } from '../packages/param-metadata/dist/index.js'
-import { MavlinkSession, MavlinkV2Codec } from '../packages/protocol-mavlink/dist/index.js'
+import { MavlinkSession, MavlinkV2Codec, createArduCopterMockScenario } from '../packages/protocol-mavlink/dist/index.js'
 import {
+  MockTransport,
   ReplayTransport,
   WebSocketTransport,
   createRecordedSession,
@@ -12,6 +13,7 @@ import {
   parseRecordedSession,
   serializeRecordedSession
 } from '../packages/transport/dist/index.js'
+import { startWebSocketBridgeServer } from '../apps/desktop/dist/websocket-bridge-server.js'
 
 test('WebSocketTransport connects, relays frames, and disconnects with an injected socket', async () => {
   const socket = new FakeWebSocket()
@@ -159,6 +161,87 @@ test('ReplayTransport can drive runtime heartbeat and parameter sync from a reco
   } finally {
     await runtime.disconnect().catch(() => {})
     runtime.destroy()
+  }
+})
+
+test('MockTransport serializes chunked inbound frames so demo parameter sync completes', async () => {
+  const scenario = createArduCopterMockScenario()
+  const transport = new MockTransport('mock-demo-transport', {
+    initialFrames: scenario.initialFrames,
+    respondToOutbound: scenario.respondToOutbound,
+    frameIntervalMs: 35,
+    responseDelayMs: 45,
+    chunkSize: 7
+  })
+  const runtime = new ArduPilotConfiguratorRuntime(
+    new MavlinkSession(transport, new MavlinkV2Codec()),
+    arducopterMetadata
+  )
+
+  try {
+    await runtime.connect()
+    await runtime.requestParameterList({ timeoutMs: 500 })
+    const stats = await runtime.waitForParameterSync({ timeoutMs: 15000 })
+
+    assert.equal(stats.status, 'complete')
+    assert.equal(stats.downloaded, 125)
+    assert.equal(stats.total, 125)
+    assert.equal(runtime.getSnapshot().parameters.find((parameter) => parameter.id === 'FRAME_CLASS')?.value, 1)
+    assert.equal(runtime.getSnapshot().parameters.find((parameter) => parameter.id === 'FRAME_TYPE')?.value, 1)
+  } finally {
+    await runtime.disconnect().catch(() => {})
+    runtime.destroy()
+  }
+})
+
+test('Bundled WebSocket bridge can drive runtime heartbeat and parameter sync from the demo source', async (t) => {
+  const scenario = createArduCopterMockScenario()
+  let bridge
+  try {
+    bridge = await startWebSocketBridgeServer({
+      host: '127.0.0.1',
+      port: 0,
+      route: '/mavlink',
+      transport: new MockTransport('bridge-demo-transport', {
+        initialFrames: scenario.initialFrames,
+        respondToOutbound: scenario.respondToOutbound,
+        frameIntervalMs: 12,
+        responseDelayMs: 20,
+        chunkSize: 7
+      })
+    })
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && (error.code === 'EPERM' || error.code === 'EACCES')) {
+      t.skip('Listening sockets are not available in the current sandbox.')
+      return
+    }
+    throw error
+  }
+
+  const runtime = new ArduPilotConfiguratorRuntime(
+    new MavlinkSession(
+      new WebSocketTransport('bridge-client', {
+        url: bridge.url
+      }),
+      new MavlinkV2Codec()
+    ),
+    arducopterMetadata
+  )
+
+  try {
+    await runtime.connect()
+    await runtime.requestParameterList({ timeoutMs: 1000 })
+    const stats = await runtime.waitForParameterSync({ timeoutMs: 8000 })
+
+    assert.equal(runtime.getSnapshot().connection.kind, 'connected')
+    assert.equal(runtime.getSnapshot().vehicle?.vehicle, 'ArduCopter')
+    assert.equal(stats.status, 'complete')
+    assert.equal(stats.downloaded, 125)
+    assert.equal(runtime.getSnapshot().parameters.find((parameter) => parameter.id === 'FRAME_CLASS')?.value, 1)
+  } finally {
+    await runtime.disconnect().catch(() => {})
+    runtime.destroy()
+    await bridge?.close().catch(() => {})
   }
 })
 

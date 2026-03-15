@@ -21,6 +21,7 @@ export class MockTransport implements Transport {
 
   private status: TransportStatus = DEFAULT_STATUS
   private isConnected = false
+  private nextInboundChunkAtMs = 0
 
   constructor(id: string, options: MockTransportOptions = {}) {
     this.id = id
@@ -44,6 +45,7 @@ export class MockTransport implements Transport {
 
     this.updateStatus({ kind: 'connecting' })
     this.isConnected = true
+    this.nextInboundChunkAtMs = Date.now()
     this.updateStatus({ kind: 'connected' })
 
     this.options.initialFrames.forEach((frame, index) => {
@@ -55,6 +57,7 @@ export class MockTransport implements Transport {
     this.pendingTimers.forEach((timer) => clearTimeout(timer))
     this.pendingTimers.clear()
     this.isConnected = false
+    this.nextInboundChunkAtMs = 0
     this.updateStatus({ kind: 'disconnected', reason: 'Mock transport disconnected.' })
   }
 
@@ -86,28 +89,26 @@ export class MockTransport implements Transport {
   }
 
   private queueInboundFrame(frame: Uint8Array, delayMs: number): void {
-    const timer = setTimeout(() => {
-      this.pendingTimers.delete(timer)
-      if (!this.isConnected) {
-        return
-      }
+    const chunks = chunkFrame(frame, this.options.chunkSize)
+    const chunkSpacingMs = 2
+    const earliestStartAtMs = Date.now() + Math.max(delayMs, 0)
+    const startAtMs = Math.max(earliestStartAtMs, this.nextInboundChunkAtMs)
 
-      const chunks = chunkFrame(frame, this.options.chunkSize)
-      chunks.forEach((chunk, index) => {
-        const nestedTimer = setTimeout(() => {
-          this.pendingTimers.delete(nestedTimer)
-          if (!this.isConnected) {
-            return
-          }
+    chunks.forEach((chunk, index) => {
+      const scheduledAtMs = startAtMs + index * chunkSpacingMs
+      const timer = setTimeout(() => {
+        this.pendingTimers.delete(timer)
+        if (!this.isConnected) {
+          return
+        }
 
-          this.frameListeners.forEach((listener) => listener(chunk))
-        }, index * 2)
+        this.frameListeners.forEach((listener) => listener(chunk))
+      }, Math.max(0, scheduledAtMs - Date.now()))
 
-        this.pendingTimers.add(nestedTimer)
-      })
-    }, delayMs)
+      this.pendingTimers.add(timer)
+    })
 
-    this.pendingTimers.add(timer)
+    this.nextInboundChunkAtMs = startAtMs + chunks.length * chunkSpacingMs
   }
 
   private updateStatus(status: TransportStatus): void {

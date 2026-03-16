@@ -50,7 +50,7 @@ Use the lowest-risk validation path that can prove your change:
 3. `npm run test:sitl` for runtime/write-path changes
 4. live FC validation for hardware-facing browser/runtime changes
 
-The live validation checklist is in [guided-setup-validation.md](guided-setup-validation.md).
+Use the repo validation ladder directly: `typecheck`, `test`, `test:sitl` when relevant, then a short live-FC pass for hardware-facing changes.
 
 ## Live Hardware Safety
 
@@ -65,7 +65,7 @@ The live validation checklist is in [guided-setup-validation.md](guided-setup-va
 - Prefer product-shaped surfaces over pushing users into raw `Parameters`.
 - Preserve the separation between transport, MAVLink/session, runtime behavior, and UI.
 - Add tests for transport/runtime logic when behavior changes.
-- Update [project-status.md](project-status.md) when a major missing item becomes implemented or when scope changes.
+- Keep README / CONTRIBUTING / ARCHITECTURE aligned when major contributor-facing workflow changes land.
 
 ## Pull Requests
 

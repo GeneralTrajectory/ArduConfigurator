@@ -112,7 +112,7 @@ ARDUPILOT_REPO_PATH=/path/to/ardupilot npm run test:sitl
 - True SITL: direct-binary ArduPilot validation for real write/readback behavior
 - Live FC: browser `Web Serial` and desktop runtime validation against actual hardware
 
-The recommended validation checklist is in [guided-setup-validation.md](guided-setup-validation.md).
+Use the mock runtime, replay transport, true SITL, and live FC paths above as the validation ladder for changes, starting with the lowest-risk option that can prove the behavior.
 
 ## Safety
 
@@ -123,8 +123,6 @@ The recommended validation checklist is in [guided-setup-validation.md](guided-s
 
 ## Key References
 
-- Status and remaining work: [project-status.md](project-status.md)
-- Original requirements: [project.md](project.md)
 - Architecture overview: [ARCHITECTURE.md](ARCHITECTURE.md)
 - Contributor workflow: [CONTRIBUTING.md](CONTRIBUTING.md)
 

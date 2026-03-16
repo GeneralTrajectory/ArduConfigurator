@@ -92,6 +92,9 @@ import { KeyValueRow, Panel, StatusBadge, buttonStyle } from '@arduconfig/ui-kit
 import { getDesktopBridge } from './desktop-bridge'
 import { FlightDeckPreview } from './flight-deck-preview'
 import { LiveGpsMapCard } from './live-gps-map'
+import { RcChannelBars } from './rc-channel-bars'
+import { MotorTestSliders } from './motor-test-sliders'
+import { RateCurveGraph } from './rate-curve-graph'
 import {
   createSavedSnapshot,
   loadStoredSnapshots,
@@ -5022,23 +5025,29 @@ export function App() {
 	      <header className="app-header">
 	        <div className="app-header__brand">
             <div className="app-header__mark">AC</div>
-	          <div>
-	            <p className="eyebrow">ArduPilot Multirotor Operator Console</p>
-	            <h1>ArduConfigurator</h1>
-	            <p className="app-header__lede">Configure, validate, and recover ArduPilot multirotors from one live bench console.</p>
-	          </div>
+	          <span className="app-header__title">ArduConfigurator</span>
 	        </div>
           <div className="app-header__summary">
-            <div className="config-pills">
-              <span>{snapshot.vehicle?.vehicle ?? 'Waiting for heartbeat'}</span>
-              <span>{snapshot.vehicle?.flightMode ?? 'No active mode'}</span>
-              <span>{snapshot.vehicle?.armed ? 'Armed' : 'Disarmed'}</span>
-              <span>
+            <div className="app-header__status-group">
+              <span className="app-header__status-item is-live">
+                <span className={`dot ${snapshot.connection.kind === 'connected' ? 'is-connected' : ''}`} />
+                {snapshot.connection.kind}
+              </span>
+            </div>
+            <div className="app-header__status-group">
+              <span className="app-header__status-item is-live">{snapshot.vehicle?.vehicle ?? 'No vehicle'}</span>
+              <span className="app-header__status-item">{snapshot.vehicle?.flightMode ?? '—'}</span>
+              <span className="app-header__status-item">{snapshot.vehicle?.armed ? 'ARMED' : 'DISARMED'}</span>
+            </div>
+            <div className="app-header__status-group">
+              <span className="app-header__status-item">
                 {snapshot.parameterStats.status === 'complete' ? `${snapshot.parameterStats.downloaded} params` : formatParameterSync(snapshot)}
               </span>
-              <span>{snapshot.sessionProfile === 'usb-bench' ? 'USB bench' : 'Full power'}</span>
-              {parameterFollowUp ? <span className="is-target">{parameterFollowUp.requiresReboot ? 'Reboot required' : 'Refresh required'}</span> : null}
+              <span className="app-header__status-item">{snapshot.sessionProfile === 'usb-bench' ? 'USB' : 'Full'}</span>
+              {parameterFollowUp ? <span className="app-header__status-item" style={{ color: 'var(--warning)' }}>{parameterFollowUp.requiresReboot ? 'Reboot req.' : 'Refresh req.'}</span> : null}
             </div>
+          </div>
+          <div className="app-header__actions">
             <StatusBadge tone={toneForConnection(snapshot.connection.kind)}>{snapshot.connection.kind}</StatusBadge>
           </div>
 	      </header>
@@ -5048,23 +5057,20 @@ export function App() {
           <div className="workspace-sidebar__shell">
             <section className="workspace-rail-section workspace-rail-section--session">
               <div className="workspace-rail-section__header">
-                <div>
-                  <strong>Session</strong>
-                  <small>Connect once, then stay in the active task.</small>
-                </div>
-                <StatusBadge tone={toneForConnection(snapshot.connection.kind)}>{snapshot.connection.kind}</StatusBadge>
+                <strong>Session</strong>
               </div>
 
-              <div className="button-row">
+              <div className="button-row" style={{ padding: '0 4px' }}>
                 <select
                   data-testid="transport-mode-select"
                   value={transportMode}
                   onChange={(event) => setTransportMode(event.target.value as TransportMode)}
                   disabled={busyAction !== undefined || snapshot.connection.kind === 'connected'}
+                  style={{ flex: 1 }}
                 >
-                  <option value="demo">Demo transport</option>
+                  <option value="demo">Demo</option>
                   <option value="web-serial" disabled={!webSerialSupported}>
-                    Browser serial{webSerialSupported ? '' : ' (unsupported)'}
+                    Serial{webSerialSupported ? '' : ' (n/a)'}
                   </option>
                   <option value="websocket">WebSocket</option>
                 </select>
@@ -5072,13 +5078,14 @@ export function App() {
                   data-testid="session-profile-select"
                   value={sessionProfile}
                   onChange={(event) => setSessionProfile(event.target.value as SessionProfile)}
+                  style={{ flex: 1 }}
                 >
                   <option value="full-power">Full power</option>
                   <option value="usb-bench">USB bench</option>
                 </select>
               </div>
               {transportMode === 'websocket' ? (
-                <label className="scoped-editor-field scoped-editor-field--compact">
+                <label className="scoped-editor-field scoped-editor-field--compact" style={{ margin: '0 4px' }}>
                   <span>WebSocket URL</span>
                   <input
                     data-testid="websocket-url-input"
@@ -5089,10 +5096,9 @@ export function App() {
                     spellCheck={false}
                     placeholder={DEFAULT_WEBSOCKET_URL}
                   />
-                  <small>Run `npm run bridge:websocket -- --demo` or `npm run bridge:websocket -- --path=/dev/tty.usbmodemXXXX` to use the bundled local bridge.</small>
                 </label>
               ) : null}
-              <div className="button-row">
+              <div className="button-row" style={{ padding: '0 4px' }}>
                 <button
                   data-testid="connect-button"
                   style={buttonStyle('primary')}
@@ -5112,19 +5118,15 @@ export function App() {
               </div>
 
               <div className="workspace-sidebar__meta">
-                <strong data-testid="session-vehicle-name">{snapshot.vehicle?.vehicle ?? 'Waiting for heartbeat'}</strong>
-                <span>{snapshot.vehicle?.flightMode ?? 'No active mode yet'}</span>
+                <strong data-testid="session-vehicle-name">{snapshot.vehicle?.vehicle ?? 'No vehicle'}</strong>
               </div>
 
-              <div className="config-pills">
-                <span>{snapshot.connection.kind}</span>
-                <span>{snapshot.sessionProfile === 'usb-bench' ? 'USB bench' : 'Full power'}</span>
+              <div className="config-pills" style={{ padding: '0 4px' }}>
                 <span data-testid="session-parameter-summary">
                   {snapshot.parameterStats.status === 'complete' ? `${snapshot.parameterStats.downloaded} params` : formatParameterSync(snapshot)}
                 </span>
-                <span>{snapshot.preArmStatus.healthy ? 'Pre-arm clear' : `${snapshot.preArmStatus.issues.length} pre-arm`}</span>
               </div>
-              <div className="sync-meter" aria-hidden="true">
+              <div className="sync-meter" aria-hidden="true" style={{ margin: '0 4px' }}>
                 <div className="sync-meter__fill" style={{ width: `${parameterSyncWidth}%` }} />
               </div>
               {parameterFollowUp ? (
@@ -5167,13 +5169,7 @@ export function App() {
             {workspaceNavSections.map((section) => (
               <section key={section.id} className="workspace-rail-section workspace-rail-section--mission">
                 <div className="workspace-rail-section__header">
-                  <div>
-                    <strong>{section.label}</strong>
-                    <small>{section.description}</small>
-                  </div>
-                  <StatusBadge tone={section.views.some((view) => view.id === activeViewId) ? 'warning' : 'neutral'}>
-                    {section.views.length}
-                  </StatusBadge>
+                  <strong>{section.label}</strong>
                 </div>
 
                 <nav className="workspace-nav workspace-nav--grouped" aria-label={`${section.label} views`}>
@@ -5189,10 +5185,8 @@ export function App() {
                         <span className="workspace-nav__mark">{viewMonogram(view.id)}</span>
                         <div className="workspace-nav__item-text">
                           <strong>{missionTitleForView(view.id)}</strong>
-                          <small>{view.description}</small>
                         </div>
                       </div>
-                      <StatusBadge tone={view.tone}>{view.badge}</StatusBadge>
                     </button>
                   ))}
                 </nav>
@@ -5201,10 +5195,7 @@ export function App() {
 
             <section className="workspace-rail-section workspace-rail-section--command">
               <div className="workspace-rail-section__header">
-                <div>
-                  <strong>Change Control</strong>
-                  <small>Keep baselines, staged work, and follow-up actions visible everywhere.</small>
-                </div>
+                <strong>Changes</strong>
                 <StatusBadge tone={totalWorkbenchInvalidChanges > 0 ? 'danger' : totalWorkbenchStagedChanges > 0 || stagedParameterDrafts.length > 0 ? 'warning' : 'success'}>
                   {totalWorkbenchInvalidChanges > 0
                     ? `${totalWorkbenchInvalidChanges} invalid`
@@ -5398,144 +5389,110 @@ export function App() {
 	          <div className="setup-command-center">
               {setupMode === 'overview' ? (
                 <>
-  	              <div id="setup-panel-link" className="setup-command-center__hero">
-	                <div className="setup-command-center__visual">
+  	              <div id="setup-panel-link" className="flight-deck-command">
+	                <div className="flight-deck-command__main">
 	                  <AttitudePreview
 	                    snapshot={snapshot}
 	                    frameClassLabel={airframe.frameClassLabel}
 	                    frameTypeLabel={airframe.frameTypeLabel}
 	                  />
+
+                    <div className="flight-deck-command__telemetry-strip">
+                      <article className="telemetry-metric-card">
+                        <span>Mode</span>
+                        <strong>{snapshot.vehicle?.flightMode ?? '—'}</strong>
+                      </article>
+                      <article className="telemetry-metric-card">
+                        <span>Params</span>
+                        <strong>
+                          {snapshot.parameterStats.status === 'complete'
+                            ? `${snapshot.parameterStats.downloaded}`
+                            : formatParameterSync(snapshot)}
+                        </strong>
+                      </article>
+                      <article className="telemetry-metric-card">
+                        <span>Pre-arm</span>
+                        <strong>{snapshot.preArmStatus.healthy ? 'Clear' : `${snapshot.preArmStatus.issues.length}`}</strong>
+                      </article>
+                      <article className="telemetry-metric-card">
+                        <span>Frame</span>
+                        <strong>{airframe.frameClassLabel}</strong>
+                      </article>
+                    </div>
+
+                    <div className="flight-deck-command__signal-strip">
+                      <span className={snapshot.liveVerification.rcInput.verified ? 'is-live' : 'is-waiting'}>
+                        <span className="dot" />
+                        {snapshot.liveVerification.rcInput.verified ? `RC ${snapshot.liveVerification.rcInput.channelCount}ch` : 'RC —'}
+                      </span>
+                      <span className={snapshot.liveVerification.batteryTelemetry.verified ? 'is-live' : 'is-waiting'}>
+                        <span className="dot" />
+                        {snapshot.liveVerification.batteryTelemetry.verified ? 'Battery' : 'Batt —'}
+                      </span>
+                      <span className={snapshot.liveVerification.attitudeTelemetry.verified ? 'is-live' : 'is-waiting'}>
+                        <span className="dot" />
+                        {snapshot.liveVerification.attitudeTelemetry.verified ? 'Attitude' : 'Att —'}
+                      </span>
+                      <span className={snapshot.preArmStatus.healthy ? 'is-live' : 'is-warn'}>
+                        <span className="dot" />
+                        {snapshot.preArmStatus.healthy ? 'Pre-arm OK' : `${snapshot.preArmStatus.issues.length} issues`}
+                      </span>
+                    </div>
+
                     {gpsPeripheralViewModels.length > 0 || snapshot.liveVerification.globalPosition.verified ? (
                       <LiveGpsMapCard
                         snapshot={snapshot}
                         title="Aircraft location"
-                        subtitle="Read-only global position context from the flight controller."
+                        subtitle="Live GPS position from the flight controller."
                         compact
                         testId="setup-gps-map-widget"
                       />
                     ) : null}
 	                </div>
 
-  	                <div className="setup-command-center__state-board">
-  	                  <div className="setup-command-center__metric-grid">
-  	                    <article className="telemetry-metric-card">
-  	                      <span>Mode</span>
-  	                      <strong>{snapshot.vehicle?.flightMode ?? 'Unknown'}</strong>
-  	                    </article>
-  	                    <article className="telemetry-metric-card">
-  	                      <span>Parameters</span>
-  	                      <strong>
-  	                        {snapshot.parameterStats.status === 'complete'
-  	                          ? `${snapshot.parameterStats.downloaded}/${snapshot.parameterStats.total || snapshot.parameterStats.downloaded}`
-  	                          : formatParameterSync(snapshot)}
-  	                      </strong>
-  	                    </article>
-  	                    <article className="telemetry-metric-card">
-  	                      <span>Pre-arm</span>
-  	                      <strong>{snapshot.preArmStatus.healthy ? 'Clear' : `${snapshot.preArmStatus.issues.length} issue(s)`}</strong>
-  	                    </article>
-  	                    <article className="telemetry-metric-card">
-  	                      <span>Airframe</span>
-  	                      <strong>{airframe.frameClassLabel}</strong>
-  	                    </article>
-  	                  </div>
+  	                <div className="flight-deck-command__sidebar">
+                      <div className="flight-deck-command__sidebar-section">
+                        <div className="flight-deck-command__sidebar-section-title">Vehicle</div>
+                        <div className="flight-deck-command__kv-row"><span>Transport</span><strong>{transportMode === 'demo' ? 'Demo' : transportMode === 'web-serial' ? 'Serial' : `WebSocket (${websocketUrl})`}</strong></div>
+                        <div className="flight-deck-command__kv-row"><span>Session</span><strong>{snapshot.sessionProfile === 'usb-bench' ? 'USB Bench' : 'Full Power'}</strong></div>
+                        <div className="flight-deck-command__kv-row"><span>Vehicle</span><strong>{snapshot.vehicle?.vehicle ?? '—'}</strong></div>
+                        <div className="flight-deck-command__kv-row"><span>Firmware</span><strong>{snapshot.vehicle?.firmware ?? '—'}</strong></div>
+                        <div className="flight-deck-command__kv-row"><span>RC Link</span><strong>{formatRcLink(snapshot)}</strong></div>
+                        <div className="flight-deck-command__kv-row"><span>Battery</span><strong>{formatBatteryTelemetry(snapshot)}</strong></div>
+                      </div>
 
-  	                  <div className="setup-overview__signal-row">
-  	                    <span className={snapshot.liveVerification.rcInput.verified ? 'is-complete' : undefined}>
-  	                      {snapshot.liveVerification.rcInput.verified ? `${snapshot.liveVerification.rcInput.channelCount} RC channels live` : 'RC waiting'}
-  	                    </span>
-  	                    <span className={snapshot.liveVerification.batteryTelemetry.verified ? 'is-complete' : undefined}>
-  	                      {snapshot.liveVerification.batteryTelemetry.verified ? 'Battery telemetry live' : 'Battery telemetry waiting'}
-  	                    </span>
-  	                    <span className={snapshot.liveVerification.attitudeTelemetry.verified ? 'is-complete' : undefined}>
-  	                      {snapshot.liveVerification.attitudeTelemetry.verified ? 'Attitude telemetry live' : 'Attitude waiting'}
-  	                    </span>
-  	                    <span className={snapshot.preArmStatus.healthy ? 'is-complete' : 'is-target'}>
-  	                      {snapshot.preArmStatus.healthy ? 'Pre-arm clear' : `${snapshot.preArmStatus.issues.length} pre-arm issue(s)`}
-  	                    </span>
-  	                  </div>
+                      <div className="flight-deck-command__sidebar-section">
+                        <div className="flight-deck-command__sidebar-section-title">Status Log</div>
+                        <div className="flight-deck-command__status-log">
+                          {snapshot.statusTexts.length === 0 ? <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>No status text yet</span> : null}
+                          {snapshot.statusTexts.slice(0, 5).map((entry) => (
+                            <div key={`${entry.severity}-${entry.text}`} className={`status-entry ${entry.severity}`}>
+                              <strong>{entry.severity}</strong>
+                              <span>{entry.text}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
 
-  	                  <div className={`setup-overview__notice${snapshot.preArmStatus.healthy ? ' is-healthy' : ''}`}>
-  	                    <strong>{guidedSetupComplete ? 'Guided setup complete' : 'Next guided setup step ready'}</strong>
-  	                    <p>
-                          {guidedSetupComplete
-                            ? 'Setup is fully signed off for this session. Use the main navigation for refinement, backups, or additional bench validation.'
-                            : selectedSetupSection
-                              ? `${selectedSetupSection.title}: ${selectedSetupSection.summary}`
-                              : 'Start guided setup to move through one aircraft step at a time.'}
-  	                    </p>
-  	                  </div>
-
-  	                  <div className="setup-overview__launch-row">
-  	                    <button
-  	                      style={buttonStyle('primary')}
-  	                      onClick={() => openSetupWizard()}
-  	                      disabled={!recommendedSetupSection}
-  	                    >
-                          {guidedSetupComplete ? 'Review Guided Setup' : completedSetupSectionCount > 0 ? `Resume ${recommendedSetupSection?.title ?? 'Setup'}` : 'Start Guided Setup'}
-  	                    </button>
-                        <small>
-                          {guidedSetupComplete
-                            ? 'All setup steps are complete.'
-                            : selectedSetupSection
-                              ? `One active task at a time. Next step: ${selectedSetupSection.title}.`
-                              : 'The wizard will focus the current incomplete setup step.'}
-                        </small>
-  	                  </div>
-  	                </div>
-  	              </div>
-
-  	              <div className="setup-command-center__status-grid">
-  	                <div className="setup-command-center__fact-list">
-  	                  <KeyValueRow label="Transport" value={
-  	                    transportMode === 'demo'
-  	                      ? 'Demo MAVLink stream'
-  	                      : transportMode === 'web-serial'
-  	                        ? webSerialSupported
-  	                          ? 'Browser Web Serial'
-  	                          : 'Unavailable'
-  	                        : `WebSocket (${websocketUrl})`
-  	                  } />
-  	                  <KeyValueRow label="Session" value={snapshot.sessionProfile === 'usb-bench' ? 'USB Bench' : 'Full Power'} />
-  	                  <KeyValueRow label="Vehicle" value={snapshot.vehicle?.vehicle ?? 'Waiting for heartbeat'} />
-  	                  <KeyValueRow label="Firmware" value={snapshot.vehicle?.firmware ?? 'Unknown'} />
-  	                  <KeyValueRow label="RC Link" value={formatRcLink(snapshot)} />
-  	                  <KeyValueRow label="Battery" value={formatBatteryTelemetry(snapshot)} />
-  	                </div>
-
-  	                <div className="setup-command-center__status-strip">
-  	                  <div className="switch-exercise-card__header">
-  	                    <div>
-  	                      <strong>Recent status</strong>
-  	                      <p>Latest autopilot text relevant to setup readiness and safety.</p>
-  	                    </div>
-  	                    <StatusBadge tone={snapshot.statusTexts.some((entry) => entry.severity === 'error') ? 'danger' : 'neutral'}>
-  	                      {snapshot.statusTexts.length} lines
-  	                    </StatusBadge>
-  	                  </div>
-  	                  <div className="status-log">
-  	                    {snapshot.statusTexts.length === 0 ? <p>No status text received yet.</p> : null}
-  	                    {snapshot.statusTexts.slice(0, 4).map((entry) => (
-  	                      <div key={`${entry.severity}-${entry.text}`} className={`status-entry ${entry.severity}`}>
-  	                        <strong>{entry.severity}</strong>
-  	                        <span>{entry.text}</span>
-  	                      </div>
-  	                    ))}
-  	                  </div>
-  	                  </div>
-  	              </div>
-
-                  {guidedSetupComplete ? (
-                    <div className="setup-flow__banner setup-flow__banner--success">
-                      <div>
-                        <strong>Guided setup complete</strong>
+                      <div className={`flight-deck-command__guided-summary${guidedSetupComplete ? ' is-complete' : ''}`}>
+                        <strong>{guidedSetupComplete ? 'Setup complete' : `Setup ${completedSetupSectionCount}/${setupFlowSections.length}`}</strong>
                         <p>
-                          Every guided setup step for this session has been verified and operator-confirmed. You can move on to refinement, backup,
-                          or optional bench validation from the main workspace navigation.
+                          {guidedSetupComplete
+                            ? 'All steps verified. Use navigation for refinement.'
+                            : selectedSetupSection
+                              ? `Next: ${selectedSetupSection.title}`
+                              : 'Start guided setup to begin.'}
                         </p>
+                        <button
+                          style={buttonStyle('primary')}
+                          onClick={() => openSetupWizard()}
+                          disabled={!recommendedSetupSection}
+                        >
+                          {guidedSetupComplete ? 'Review Setup' : completedSetupSectionCount > 0 ? 'Resume Setup' : 'Start Setup'}
+                        </button>
                       </div>
                     </div>
-                  ) : null}
+  	              </div>
 
                   {setupFlowFollowUp ? (
                     <div className={`setup-flow__banner setup-flow__banner--${setupFlowFollowUp.tone}`}>
@@ -6466,6 +6423,12 @@ export function App() {
                     </small>
                   ) : null}
                 </div>
+
+                <RcChannelBars
+                  channels={rcChannelDisplays}
+                  verified={snapshot.liveVerification.rcInput.verified}
+                  testId="receiver-channel-bars"
+                />
 
                 <div className="rc-channel-grid">
                   {rcChannelDisplays.map((channel) => (
@@ -8011,6 +7974,22 @@ export function App() {
           </div>
 
           <div className="outputs-lab-grid">
+          <MotorTestSliders
+            motorCount={outputMapping.motorOutputs.length || 4}
+            selectedOutput={motorTestOutput}
+            throttlePercent={motorTestThrottlePercent}
+            onSelectOutput={(output) => setMotorTestOutput(output)}
+            onThrottleChange={(percent) => setMotorTestThrottlePercent(percent)}
+            onTest={() => void handleMotorTest({
+              outputChannel: motorTestOutput!,
+              throttlePercent: motorTestThrottlePercent,
+              durationSeconds: motorTestDurationSeconds
+            })}
+            testDisabled={busyAction !== undefined || !motorTestEligibility.eligible || motorTestOutput === undefined}
+            masterEnabled={false}
+            testId="motor-test-sliders"
+          />
+
           <div className="motor-test-card">
             <div className="switch-exercise-card__header">
               <div>
@@ -8946,6 +8925,20 @@ export function App() {
               </article>
             </div>
 
+            <div className="tuning-card-grid">
+              <RateCurveGraph
+                maxRate={Number(editedValues['ACRO_RP_RATE'] ?? readParameterValue(snapshot, 'ACRO_RP_RATE') ?? 360)}
+                expo={Number(editedValues['ACRO_RP_EXPO'] ?? readParameterValue(snapshot, 'ACRO_RP_EXPO') ?? 0)}
+                label="Roll / Pitch"
+              />
+              <RateCurveGraph
+                maxRate={Number(editedValues['ACRO_Y_RATE'] ?? readParameterValue(snapshot, 'ACRO_Y_RATE') ?? 180)}
+                expo={Number(editedValues['ACRO_Y_EXPO'] ?? readParameterValue(snapshot, 'ACRO_Y_EXPO') ?? 0)}
+                label="Yaw"
+                color="#dab254"
+              />
+            </div>
+
             <div className="scoped-review-card">
               <div className="switch-exercise-card__header">
                 <div>
@@ -9679,6 +9672,31 @@ export function App() {
       ) : null}
         </div>
       </div>
+
+      <footer className="app-status-bar">
+        <span className={`app-status-bar__item ${snapshot.connection.kind === 'connected' ? 'is-ok' : ''}`}>
+          <span className="dot" />
+          {snapshot.connection.kind}
+        </span>
+        <span className="app-status-bar__item">
+          {snapshot.vehicle?.vehicle ?? '—'}
+        </span>
+        <span className="app-status-bar__item">
+          {snapshot.parameterStats.status === 'complete'
+            ? `${snapshot.parameterStats.downloaded} params synced`
+            : formatParameterSync(snapshot)}
+        </span>
+        {snapshot.preArmStatus.healthy
+          ? <span className="app-status-bar__item is-ok"><span className="dot" />Pre-arm clear</span>
+          : <span className="app-status-bar__item is-warn"><span className="dot" />{snapshot.preArmStatus.issues.length} pre-arm issues</span>}
+        <span className="app-status-bar__spacer" />
+        <span className="app-status-bar__item">
+          {snapshot.sessionProfile === 'usb-bench' ? 'USB bench' : 'Full power'}
+        </span>
+        <span className="app-status-bar__item">
+          {missionTitleForView(activeViewId)}
+        </span>
+      </footer>
     </main>
   )
 }

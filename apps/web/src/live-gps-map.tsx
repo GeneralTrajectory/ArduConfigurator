@@ -1,3 +1,5 @@
+import { useEffect, useMemo, useState } from 'react'
+
 import type { ConfiguratorSnapshot } from '@arduconfig/ardupilot-core'
 import { StatusBadge } from '@arduconfig/ui-kit'
 
@@ -8,6 +10,13 @@ interface LiveGpsMapCardProps {
   compact?: boolean
   testId?: string
 }
+
+interface StableMapFocus {
+  latitudeDeg: number
+  longitudeDeg: number
+}
+
+const MAP_RECENTER_THRESHOLD_METERS = 18
 
 function formatCoordinate(value: number | undefined, positiveLabel: string, negativeLabel: string): string {
   if (value === undefined) {
@@ -24,7 +33,7 @@ function buildLongitudeDelta(latitudeDeg: number, latitudeDelta: number): number
 }
 
 function buildMapBounds(latitudeDeg: number, longitudeDeg: number, compact: boolean): string {
-  const latitudeDelta = compact ? 0.01 : 0.006
+  const latitudeDelta = compact ? 0.0038 : 0.0026
   const longitudeDelta = buildLongitudeDelta(latitudeDeg, latitudeDelta)
   const minLongitude = longitudeDeg - longitudeDelta
   const minLatitude = latitudeDeg - latitudeDelta
@@ -40,7 +49,7 @@ function buildOpenStreetMapEmbedUrl(latitudeDeg: number, longitudeDeg: number, c
 }
 
 function buildOpenStreetMapUrl(latitudeDeg: number, longitudeDeg: number, compact: boolean): string {
-  const zoom = compact ? 14 : 15
+  const zoom = compact ? 16 : 17
   return `https://www.openstreetmap.org/?mlat=${latitudeDeg.toFixed(6)}&mlon=${longitudeDeg.toFixed(6)}#map=${zoom}/${latitudeDeg.toFixed(6)}/${longitudeDeg.toFixed(6)}`
 }
 
@@ -48,13 +57,56 @@ function formatMetric(value: number | undefined, suffix: string): string {
   return value === undefined ? 'Unknown' : `${value.toFixed(1)}${suffix}`
 }
 
+function distanceBetweenCoordinatesMeters(a: StableMapFocus, b: StableMapFocus): number {
+  const averageLatitudeRad = ((a.latitudeDeg + b.latitudeDeg) * Math.PI) / 360
+  const latitudeMeters = (b.latitudeDeg - a.latitudeDeg) * 111_320
+  const longitudeMeters = (b.longitudeDeg - a.longitudeDeg) * 111_320 * Math.cos(averageLatitudeRad)
+  return Math.hypot(latitudeMeters, longitudeMeters)
+}
+
 export function LiveGpsMapCard({ snapshot, title, subtitle, compact = false, testId }: LiveGpsMapCardProps) {
   const position = snapshot.liveVerification.globalPosition
   const latitudeDeg = position.latitudeDeg
   const longitudeDeg = position.longitudeDeg
   const verified = position.verified && latitudeDeg !== undefined && longitudeDeg !== undefined
-  const embedUrl = verified ? buildOpenStreetMapEmbedUrl(latitudeDeg, longitudeDeg, compact) : undefined
-  const externalUrl = verified ? buildOpenStreetMapUrl(latitudeDeg, longitudeDeg, compact) : undefined
+  const [stableFocus, setStableFocus] = useState<StableMapFocus | undefined>(undefined)
+
+  useEffect(() => {
+    if (!verified) {
+      return
+    }
+
+    const nextFocus = { latitudeDeg, longitudeDeg }
+    setStableFocus((currentFocus) => {
+      if (!currentFocus) {
+        return nextFocus
+      }
+
+      return distanceBetweenCoordinatesMeters(currentFocus, nextFocus) >= MAP_RECENTER_THRESHOLD_METERS
+        ? nextFocus
+        : currentFocus
+    })
+  }, [verified, latitudeDeg, longitudeDeg])
+
+  const displayFocus = verified
+    ? stableFocus ?? { latitudeDeg, longitudeDeg }
+    : undefined
+
+  const embedUrl = useMemo(() => {
+    if (!displayFocus) {
+      return undefined
+    }
+
+    return buildOpenStreetMapEmbedUrl(displayFocus.latitudeDeg, displayFocus.longitudeDeg, compact)
+  }, [compact, displayFocus])
+
+  const externalUrl = useMemo(() => {
+    if (!displayFocus) {
+      return undefined
+    }
+
+    return buildOpenStreetMapUrl(displayFocus.latitudeDeg, displayFocus.longitudeDeg, compact)
+  }, [compact, displayFocus])
 
   return (
     <div className={`gps-map-card${compact ? ' gps-map-card--compact' : ''}`} data-testid={testId}>
@@ -110,7 +162,7 @@ export function LiveGpsMapCard({ snapshot, title, subtitle, compact = false, tes
       <div className="gps-map-card__footer">
         <small>
           {verified
-            ? 'Map tiles come from OpenStreetMap. The live coordinates remain useful even if the browser cannot load external map tiles.'
+            ? 'Map tiles come from OpenStreetMap. The view recenters only after meaningful aircraft movement so zoom and pan stay usable during small GPS drift.'
             : 'Mission-control style location review appears automatically when the flight controller reports a live global position.'}
         </small>
         {externalUrl ? (

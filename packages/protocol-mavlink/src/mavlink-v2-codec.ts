@@ -15,6 +15,7 @@ import type {
   AttitudeMessage,
   CommandAckMessage,
   CommandLongMessage,
+  GlobalPositionIntMessage,
   HeartbeatMessage,
   MavlinkEnvelope,
   MavlinkMessage,
@@ -144,6 +145,8 @@ function encodePayload(message: MavlinkMessage): Uint8Array {
       return encodeHeartbeatPayload(message)
     case 'SYS_STATUS':
       return encodeSysStatusPayload(message)
+    case 'GLOBAL_POSITION_INT':
+      return encodeGlobalPositionIntPayload(message)
     case 'PARAM_REQUEST_LIST':
       return encodeParamRequestListPayload(message)
     case 'PARAM_VALUE':
@@ -171,6 +174,8 @@ function decodePayload(messageId: number, payload: Uint8Array): MavlinkMessage |
       return decodeHeartbeatPayload(payload)
     case MAVLINK_MESSAGE_IDS.SYS_STATUS:
       return decodeSysStatusPayload(payload)
+    case MAVLINK_MESSAGE_IDS.GLOBAL_POSITION_INT:
+      return decodeGlobalPositionIntPayload(payload)
     case MAVLINK_MESSAGE_IDS.PARAM_REQUEST_LIST:
       return decodeParamRequestListPayload(payload)
     case MAVLINK_MESSAGE_IDS.PARAM_VALUE:
@@ -198,6 +203,8 @@ function messageIdFor(message: MavlinkMessage): number {
       return MAVLINK_MESSAGE_IDS.HEARTBEAT
     case 'SYS_STATUS':
       return MAVLINK_MESSAGE_IDS.SYS_STATUS
+    case 'GLOBAL_POSITION_INT':
+      return MAVLINK_MESSAGE_IDS.GLOBAL_POSITION_INT
     case 'PARAM_REQUEST_LIST':
       return MAVLINK_MESSAGE_IDS.PARAM_REQUEST_LIST
     case 'PARAM_VALUE':
@@ -279,6 +286,21 @@ function encodeAttitudePayload(message: AttitudeMessage): Uint8Array {
   return payload
 }
 
+function encodeGlobalPositionIntPayload(message: GlobalPositionIntMessage): Uint8Array {
+  const payload = new Uint8Array(MAVLINK_PAYLOAD_LENGTHS[MAVLINK_MESSAGE_IDS.GLOBAL_POSITION_INT])
+  const view = new DataView(payload.buffer)
+  view.setUint32(0, message.timeBootMs, true)
+  view.setInt32(4, message.latitudeE7, true)
+  view.setInt32(8, message.longitudeE7, true)
+  view.setInt32(12, message.altitudeMm, true)
+  view.setInt32(16, message.relativeAltitudeMm, true)
+  view.setInt16(20, message.velocityXcms, true)
+  view.setInt16(22, message.velocityYcms, true)
+  view.setInt16(24, message.velocityZcms, true)
+  view.setUint16(26, message.headingCdeg, true)
+  return payload
+}
+
 function decodeAttitudePayload(payload: Uint8Array): AttitudeMessage {
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
   return {
@@ -313,6 +335,22 @@ function decodeSysStatusPayload(payload: Uint8Array): SysStatusMessage {
     sensorsPresentExtended: payload.byteLength >= 35 ? view.getUint32(31, true) : 0,
     sensorsEnabledExtended: payload.byteLength >= 39 ? view.getUint32(35, true) : 0,
     sensorsHealthExtended: payload.byteLength >= 43 ? view.getUint32(39, true) : 0
+  }
+}
+
+function decodeGlobalPositionIntPayload(payload: Uint8Array): GlobalPositionIntMessage {
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+  return {
+    type: 'GLOBAL_POSITION_INT',
+    timeBootMs: view.getUint32(0, true),
+    latitudeE7: view.getInt32(4, true),
+    longitudeE7: view.getInt32(8, true),
+    altitudeMm: view.getInt32(12, true),
+    relativeAltitudeMm: view.getInt32(16, true),
+    velocityXcms: view.getInt16(20, true),
+    velocityYcms: view.getInt16(22, true),
+    velocityZcms: view.getInt16(24, true),
+    headingCdeg: view.getUint16(26, true)
   }
 }
 

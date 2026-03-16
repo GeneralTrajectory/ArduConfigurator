@@ -10,7 +10,14 @@ import {
   MAVLINK_MESSAGE_IDS,
 } from './constants.js'
 import { decodeSingleV2Envelope, MavlinkV2Codec } from './mavlink-v2-codec.js'
-import type { CommandLongMessage, MavlinkEnvelope, MavlinkMessage, ParamSetMessage, ParamValueMessage } from './messages.js'
+import type {
+  CommandLongMessage,
+  GlobalPositionIntMessage,
+  MavlinkEnvelope,
+  MavlinkMessage,
+  ParamSetMessage,
+  ParamValueMessage
+} from './messages.js'
 
 export interface MockScenario {
   initialFrames: Uint8Array[]
@@ -204,6 +211,21 @@ function sysStatusMessage(voltageBatteryMv: number, batteryRemaining: number): M
   }
 }
 
+function globalPositionMessage(timeBootMs: number): GlobalPositionIntMessage {
+  return {
+    type: 'GLOBAL_POSITION_INT',
+    timeBootMs,
+    latitudeE7: 377749300,
+    longitudeE7: -1224194200,
+    altitudeMm: 18420,
+    relativeAltitudeMm: 1240,
+    velocityXcms: 120,
+    velocityYcms: -40,
+    velocityZcms: 0,
+    headingCdeg: 27450
+  }
+}
+
 function buildParameterFrames(parameterState: ParameterState): Uint8Array[] {
   const codec = new MavlinkV2Codec()
   const entries = Object.entries(parameterState)
@@ -249,7 +271,8 @@ export function createArduCopterMockScenario(): MockScenario {
       ),
       codec.encode(envelope(3, sysStatusMessage(16420, 72))),
       codec.encode(envelope(4, rcChannelsMessage(1200))),
-      codec.encode(envelope(5, attitudeMessage(1200)))
+      codec.encode(envelope(5, attitudeMessage(1200))),
+      codec.encode(envelope(6, globalPositionMessage(1200)))
     ],
     respondToOutbound: (frame) => {
       const outbound = decodeSingleV2Envelope(frame)
@@ -312,6 +335,9 @@ export function createArduCopterMockScenario(): MockScenario {
             }
             if (requestedMessageId === MAVLINK_MESSAGE_IDS.ATTITUDE) {
               responses.push(codec.encode(envelope(93, attitudeMessage(1600))))
+            }
+            if (requestedMessageId === MAVLINK_MESSAGE_IDS.GLOBAL_POSITION_INT) {
+              responses.push(codec.encode(envelope(94, globalPositionMessage(1600))))
             }
           } else if (outbound.message.command === MAV_CMD.DO_MOTOR_TEST) {
             const outputChannel = Math.round(outbound.message.params[0] ?? 0)

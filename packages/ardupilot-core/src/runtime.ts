@@ -10,6 +10,7 @@ import type {
   AttitudeMessage,
   CommandAckMessage,
   CommandLongMessage,
+  GlobalPositionIntMessage,
   HeartbeatMessage,
   MavlinkEnvelope,
   ParamValueMessage,
@@ -110,6 +111,11 @@ const PRE_ARM_ISSUE_TTL_MS = 15000
 const MAX_GUIDED_ACTION_STATUS_TEXTS = 5
 const MOTOR_TEST_COMPLETION_BUFFER_MS = 250
 const LIVE_TELEMETRY_REQUESTS = [
+  {
+    messageId: MAVLINK_MESSAGE_IDS.GLOBAL_POSITION_INT,
+    label: 'GLOBAL_POSITION_INT',
+    intervalUs: 500000
+  },
   {
     messageId: MAVLINK_MESSAGE_IDS.ATTITUDE,
     label: 'ATTITUDE',
@@ -644,6 +650,9 @@ export class ArduPilotConfiguratorRuntime {
       case 'RC_CHANNELS':
         this.processRcChannels(envelope.message)
         break
+      case 'GLOBAL_POSITION_INT':
+        this.processGlobalPosition(envelope.message)
+        break
       case 'ATTITUDE':
         this.processAttitude(envelope.message)
         break
@@ -767,6 +776,23 @@ export class ArduPilotConfiguratorRuntime {
       rollDeg: radiansToDegrees(message.rollRad),
       pitchDeg: radiansToDegrees(message.pitchRad),
       yawDeg: radiansToDegrees(message.yawRad),
+      lastSeenAtMs: Date.now()
+    }
+  }
+
+  private processGlobalPosition(message: GlobalPositionIntMessage): void {
+    const hasValidCoordinates = isValidGlobalCoordinates(message.latitudeE7, message.longitudeE7)
+    const horizontalSpeedCms = Math.hypot(message.velocityXcms, message.velocityYcms)
+
+    this.liveVerification.globalPosition = {
+      verified: hasValidCoordinates,
+      latitudeDeg: hasValidCoordinates ? Number((message.latitudeE7 / 1e7).toFixed(7)) : undefined,
+      longitudeDeg: hasValidCoordinates ? Number((message.longitudeE7 / 1e7).toFixed(7)) : undefined,
+      altitudeM: hasValidCoordinates ? Number((message.altitudeMm / 1000).toFixed(1)) : undefined,
+      relativeAltitudeM: hasValidCoordinates ? Number((message.relativeAltitudeMm / 1000).toFixed(1)) : undefined,
+      groundSpeedMs: hasValidCoordinates ? Number((horizontalSpeedCms / 100).toFixed(1)) : undefined,
+      headingDeg:
+        hasValidCoordinates && message.headingCdeg !== 0xffff ? Number((message.headingCdeg / 100).toFixed(1)) : undefined,
       lastSeenAtMs: Date.now()
     }
   }
@@ -1296,6 +1322,9 @@ function createIdleLiveVerification(): LiveVerificationState {
     },
     attitudeTelemetry: {
       verified: false
+    },
+    globalPosition: {
+      verified: false
     }
   }
 }
@@ -1352,6 +1381,9 @@ function cloneLiveVerification(liveVerification: LiveVerificationState): LiveVer
     },
     attitudeTelemetry: {
       ...liveVerification.attitudeTelemetry
+    },
+    globalPosition: {
+      ...liveVerification.globalPosition
     }
   }
 }
@@ -1614,6 +1646,12 @@ function recomputeSatisfiedSignals(liveVerification: LiveVerificationState): Liv
 
 function radiansToDegrees(value: number): number {
   return Number((value * (180 / Math.PI)).toFixed(1))
+}
+
+function isValidGlobalCoordinates(latitudeE7: number, longitudeE7: number): boolean {
+  const latitudeDeg = latitudeE7 / 1e7
+  const longitudeDeg = longitudeE7 / 1e7
+  return latitudeE7 !== 0 && longitudeE7 !== 0 && Math.abs(latitudeDeg) <= 90 && Math.abs(longitudeDeg) <= 180
 }
 
 function liveSignalLabel(signalId: LiveSignalId): string {

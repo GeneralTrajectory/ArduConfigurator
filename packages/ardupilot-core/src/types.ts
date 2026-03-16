@@ -112,11 +112,23 @@ export interface AttitudeTelemetryState {
   lastSeenAtMs?: number
 }
 
+export interface GlobalPositionTelemetryState {
+  verified: boolean
+  latitudeDeg?: number
+  longitudeDeg?: number
+  altitudeM?: number
+  relativeAltitudeM?: number
+  groundSpeedMs?: number
+  headingDeg?: number
+  lastSeenAtMs?: number
+}
+
 export interface LiveVerificationState {
   satisfiedSignals: LiveSignalId[]
   rcInput: RcInputState
   batteryTelemetry: BatteryTelemetryState
   attitudeTelemetry: AttitudeTelemetryState
+  globalPosition: GlobalPositionTelemetryState
 }
 
 export interface MotorTestState {

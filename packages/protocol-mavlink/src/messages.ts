@@ -53,6 +53,19 @@ export interface SysStatusMessage {
   sensorsHealthExtended: number
 }
 
+export interface GlobalPositionIntMessage {
+  type: 'GLOBAL_POSITION_INT'
+  timeBootMs: number
+  latitudeE7: number
+  longitudeE7: number
+  altitudeMm: number
+  relativeAltitudeMm: number
+  velocityXcms: number
+  velocityYcms: number
+  velocityZcms: number
+  headingCdeg: number
+}
+
 export interface AttitudeMessage {
   type: 'ATTITUDE'
   timeBootMs: number
@@ -102,6 +115,7 @@ export type MavlinkMessage =
   | HeartbeatMessage
   | RcChannelsMessage
   | SysStatusMessage
+  | GlobalPositionIntMessage
   | AttitudeMessage
   | ParamValueMessage
   | StatusTextMessage

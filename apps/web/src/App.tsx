@@ -91,6 +91,7 @@ import { KeyValueRow, Panel, StatusBadge, buttonStyle } from '@arduconfig/ui-kit
 
 import { getDesktopBridge } from './desktop-bridge'
 import { FlightDeckPreview } from './flight-deck-preview'
+import { LiveGpsMapCard } from './live-gps-map'
 import {
   createSavedSnapshot,
   loadStoredSnapshots,
@@ -157,6 +158,7 @@ const DEFAULT_WEBSOCKET_URL = 'ws://127.0.0.1:14550'
 
 type TransportMode = 'demo' | 'web-serial' | 'websocket'
 type ProductMode = 'basic' | 'expert'
+type SetupMode = 'overview' | 'wizard'
 type StatusTone = 'neutral' | 'success' | 'warning' | 'danger'
 type ModeSwitchExerciseStatus = 'idle' | 'running' | 'passed' | 'failed'
 
@@ -168,6 +170,20 @@ interface AppViewDescriptor {
   description: string
   badge: string
   tone: StatusTone
+}
+
+interface WorkspaceNavSectionDefinition {
+  id: 'flight' | 'bench' | 'change' | 'expert'
+  label: string
+  description: string
+  viewIds: AppViewId[]
+}
+
+interface WorkspaceNavSection {
+  id: WorkspaceNavSectionDefinition['id']
+  label: string
+  description: string
+  views: AppViewDescriptor[]
 }
 
 interface RcChannelDisplay {
@@ -416,6 +432,63 @@ function viewMonogram(viewId: AppViewId): string {
     default:
       return 'APP'
   }
+}
+
+const WORKSPACE_NAV_SECTIONS: WorkspaceNavSectionDefinition[] = [
+  {
+    id: 'flight',
+    label: 'Flight Deck',
+    description: 'Connect, inspect, and keep the aircraft state legible.',
+    viewIds: ['setup']
+  },
+  {
+    id: 'bench',
+    label: 'Bench Setup',
+    description: 'Wire, verify, and harden the aircraft before flight.',
+    viewIds: ['ports', 'receiver', 'outputs', 'power']
+  },
+  {
+    id: 'change',
+    label: 'Change Control',
+    description: 'Manage baselines, presets, and deliberate configuration changes.',
+    viewIds: ['snapshots', 'presets', 'tuning']
+  },
+  {
+    id: 'expert',
+    label: 'Engineering',
+    description: 'Direct parameter access and deep inspection.',
+    viewIds: ['parameters']
+  }
+]
+
+function missionTitleForView(viewId: AppViewId): string {
+  switch (viewId) {
+    case 'setup':
+      return 'Flight Deck'
+    case 'ports':
+      return 'Ports & Peripheral Routing'
+    case 'receiver':
+      return 'Receiver Workbench'
+    case 'outputs':
+      return 'Outputs & Bench Lab'
+    case 'power':
+      return 'Power & Safety'
+    case 'snapshots':
+      return 'Snapshots & Restore'
+    case 'tuning':
+      return 'Flight Feel'
+    case 'presets':
+      return 'Guided Presets'
+    case 'parameters':
+      return 'Expert Parameters'
+    default:
+      return 'Configurator'
+  }
+}
+
+function missionSectionLabelForView(viewId: AppViewId): string {
+  const section = WORKSPACE_NAV_SECTIONS.find((candidate) => candidate.viewIds.includes(viewId))
+  return section?.label ?? 'Configurator'
 }
 
 function AttitudePreview({
@@ -786,22 +859,6 @@ function deriveSetupStatusFromCriteria(criteria: SetupFlowCriterion[]): 'attenti
   return criteriaMetCount === 0 ? 'attention' : 'in-progress'
 }
 
-function toneForGuidedAction(
-  kind: ConfiguratorSnapshot['guidedActions'][keyof ConfiguratorSnapshot['guidedActions']]['status']
-): StatusTone {
-  switch (kind) {
-    case 'succeeded':
-      return 'success'
-    case 'failed':
-      return 'danger'
-    case 'requested':
-    case 'running':
-      return 'warning'
-    default:
-      return 'neutral'
-  }
-}
-
 function formatParameterSync(snapshot: ConfiguratorSnapshot): string {
   const { status, downloaded, total, progress } = snapshot.parameterStats
   if (status === 'idle') {
@@ -1140,6 +1197,11 @@ function isNotificationLedServoFunction(functionValue: number | undefined): bool
 
 function parseServoOutputChannelNumber(paramId: string): number | undefined {
   const match = paramId.match(/^SERVO(\d+)_FUNCTION$/)
+  return match ? Number(match[1]) : undefined
+}
+
+function parseSerialPortNumber(paramId: string): number | undefined {
+  const match = paramId.match(/^SERIAL(\d+)_(PROTOCOL|BAUD)$/)
   return match ? Number(match[1]) : undefined
 }
 
@@ -1591,9 +1653,12 @@ export function App() {
   const [motorVerification, setMotorVerification] = useState<MotorVerificationState>(createIdleMotorVerificationState)
   const [propsRemovedAcknowledged, setPropsRemovedAcknowledged] = useState(false)
   const [testAreaAcknowledged, setTestAreaAcknowledged] = useState(false)
+  const [showAllOutputAssignments, setShowAllOutputAssignments] = useState(false)
+  const [showAllSerialPorts, setShowAllSerialPorts] = useState(false)
   const [snapshotRestoreAcknowledged, setSnapshotRestoreAcknowledged] = useState(false)
   const [presetApplyAcknowledged, setPresetApplyAcknowledged] = useState(false)
   const [selectedSetupSectionId, setSelectedSetupSectionId] = useState<string>()
+  const [setupMode, setSetupMode] = useState<SetupMode>('overview')
   const [setupConfirmations, setSetupConfirmations] = useState<Record<string, SetupConfirmationRecord>>({})
   const parameterBackupInputRef = useRef<HTMLInputElement>(null)
   const snapshotImportInputRef = useRef<HTMLInputElement>(null)
@@ -1912,20 +1977,6 @@ export function App() {
     () => selectedSnapshotChangedEntries.filter((entry) => entry.definition?.rebootRequired).length,
     [selectedSnapshotChangedEntries]
   )
-  const selectedSnapshotStatusTone = selectedSnapshot
-    ? selectedSnapshotInvalidEntries.length > 0
-      ? 'danger'
-      : selectedSnapshotChangedEntries.length > 0
-        ? 'warning'
-        : 'success'
-    : 'neutral'
-  const selectedSnapshotStatusLabel = selectedSnapshot
-    ? selectedSnapshotInvalidEntries.length > 0
-      ? `${selectedSnapshotInvalidEntries.length} invalid`
-      : selectedSnapshotChangedEntries.length > 0
-        ? `${selectedSnapshotChangedEntries.length} diff`
-        : 'matched'
-    : 'none'
   const presetDefinitions = useMemo(() => metadataCatalog.presets, [metadataCatalog.presets])
   const presetGroups = useMemo(
     () => metadataCatalog.presetGroups.filter((group) => (metadataCatalog.presetsByGroup[group.id] ?? []).length > 0),
@@ -2102,6 +2153,37 @@ export function App() {
     [snapshot.parameters]
   )
   const serialPortViewModels = useMemo(() => buildSerialPortViewModels(snapshot), [snapshot])
+  const prioritizedSerialPortNumbers = useMemo(() => {
+    const portNumbers = new Set<number>()
+
+    serialPortViewModels.forEach((port) => {
+      if (port.protocolValue !== undefined && port.protocolValue !== 0 && port.protocolValue !== -1) {
+        portNumbers.add(port.portNumber)
+      }
+    })
+
+    portsDraftEntries.forEach((entry) => {
+      if (entry.status === 'unchanged') {
+        return
+      }
+
+      const portNumber = parseSerialPortNumber(entry.id)
+      if (portNumber !== undefined) {
+        portNumbers.add(portNumber)
+      }
+    })
+
+    return [...portNumbers].sort((left, right) => left - right)
+  }, [portsDraftEntries, serialPortViewModels])
+  const visibleSerialPortViewModels = useMemo(() => {
+    if (showAllSerialPorts) {
+      return serialPortViewModels
+    }
+
+    const visiblePorts = serialPortViewModels.filter((port) => prioritizedSerialPortNumbers.includes(port.portNumber))
+    return visiblePorts.length > 0 ? visiblePorts : serialPortViewModels.slice(0, Math.min(serialPortViewModels.length, 4))
+  }, [prioritizedSerialPortNumbers, serialPortViewModels, showAllSerialPorts])
+  const hiddenSerialPortCount = serialPortViewModels.length - visibleSerialPortViewModels.length
   const gpsPeripheralViewModels = useMemo(() => buildGpsPeripheralViewModels(snapshot), [snapshot])
   const portsPeripheralParameters = useMemo(
     () =>
@@ -2232,6 +2314,44 @@ export function App() {
         .sort((left, right) => (parseServoOutputChannelNumber(left.id) ?? 99) - (parseServoOutputChannelNumber(right.id) ?? 99)),
     [snapshot.parameters]
   )
+  const prioritizedOutputAssignmentChannels = useMemo(() => {
+    const channels = new Set<number>()
+    const defaultVisibleMotorCount = Math.max(airframe.expectedMotorCount ?? 0, 4)
+
+    for (let channelNumber = 1; channelNumber <= defaultVisibleMotorCount; channelNumber += 1) {
+      channels.add(channelNumber)
+    }
+
+    configuredOutputs.forEach((output) => {
+      channels.add(output.channelNumber)
+    })
+
+    outputAssignmentDraftEntries.forEach((entry) => {
+      if (entry.status === 'unchanged') {
+        return
+      }
+
+      const channelNumber = parseServoOutputChannelNumber(entry.id)
+      if (channelNumber !== undefined) {
+        channels.add(channelNumber)
+      }
+    })
+
+    return [...channels].sort((left, right) => left - right)
+  }, [airframe.expectedMotorCount, configuredOutputs, outputAssignmentDraftEntries])
+  const visibleOutputAssignmentParameters = useMemo(() => {
+    if (showAllOutputAssignments) {
+      return outputAssignmentParameters
+    }
+
+    const visibleParameters = outputAssignmentParameters.filter((parameter) => {
+      const channelNumber = parseServoOutputChannelNumber(parameter.id)
+      return channelNumber !== undefined && prioritizedOutputAssignmentChannels.includes(channelNumber)
+    })
+
+    return visibleParameters.length > 0 ? visibleParameters : outputAssignmentParameters.slice(0, Math.min(outputAssignmentParameters.length, 4))
+  }, [outputAssignmentParameters, prioritizedOutputAssignmentChannels, showAllOutputAssignments])
+  const hiddenOutputAssignmentCount = outputAssignmentParameters.length - visibleOutputAssignmentParameters.length
   const setupAdditionalGroups = useMemo(
     () => buildAdditionalSettingsGroups(snapshot, metadataCatalog, 'setup', new Set<string>()),
     [metadataCatalog, snapshot]
@@ -2445,6 +2565,11 @@ export function App() {
 
   function scrollToPanel(panelId: string): void {
     const targetViewId = appViewForPanel(panelId)
+    if (panelId === 'setup-panel-guided') {
+      setSetupMode('wizard')
+    } else if (panelId === 'setup-panel-link') {
+      setSetupMode('overview')
+    }
     if (targetViewId !== activeViewId) {
       setActiveViewId(targetViewId)
       requestAnimationFrame(() => {
@@ -4331,9 +4456,31 @@ export function App() {
     !selectedSetupSectionCandidate || selectedSetupSectionCandidate.sequenceState === 'locked'
       ? recommendedSetupSection
       : selectedSetupSectionCandidate
+  const selectedSetupSectionIndex = selectedSetupSection
+    ? setupFlowSections.findIndex((section) => section.id === selectedSetupSection.id)
+    : -1
+  const previousSetupSection =
+    selectedSetupSectionIndex > 0 ? setupFlowSections[selectedSetupSectionIndex - 1] : undefined
+  const nextSetupSection =
+    selectedSetupSectionIndex >= 0 && selectedSetupSectionIndex < setupFlowSections.length - 1
+      ? setupFlowSections[selectedSetupSectionIndex + 1]
+      : undefined
   const completedSetupSectionCount = setupFlowSections.filter((section) => section.status === 'complete').length
   const setupFlowProgress = setupFlowSections.length === 0 ? 0 : (completedSetupSectionCount / setupFlowSections.length) * 100
   const guidedSetupComplete = setupFlowSections.length > 0 && completedSetupSectionCount === setupFlowSections.length
+  const guidedSetupPrimaryAction =
+    selectedSetupSection?.actions.find((action) => action.tone === 'primary' && action.kind !== 'scroll') ??
+    selectedSetupSection?.actions.find((action) => action.kind !== 'scroll') ??
+    selectedSetupSection?.actions[0]
+  const guidedSetupContextAction =
+    selectedSetupSection?.actions.find((action) => action.kind === 'scroll' && action.panelId !== 'setup-panel-guided')
+  const guidedSetupSupportActions =
+    selectedSetupSection?.actions.filter(
+      (action) =>
+        action !== guidedSetupPrimaryAction &&
+        action !== guidedSetupContextAction &&
+        !(action.kind === 'scroll' && action.panelId === 'setup-panel-guided')
+    ) ?? []
   const isExpertMode = productMode === 'expert'
   const appViews = useMemo<AppViewDescriptor[]>(
     () =>
@@ -4522,6 +4669,81 @@ export function App() {
     () => appViews.filter((view) => isExpertMode || !isExpertOnlyView(view.id)),
     [appViews, isExpertMode]
   )
+  const activeViewDescriptor = visibleAppViews.find((view) => view.id === activeViewId) ?? visibleAppViews[0]
+  const workspaceNavSections = useMemo<WorkspaceNavSection[]>(
+    () =>
+      WORKSPACE_NAV_SECTIONS.map((section) => ({
+        id: section.id,
+        label: section.label,
+        description: section.description,
+        views: section.viewIds
+          .map((viewId) => visibleAppViews.find((view) => view.id === viewId))
+          .filter((view): view is AppViewDescriptor => view !== undefined)
+      })).filter((section) => section.views.length > 0),
+    [visibleAppViews]
+  )
+  const activeWorkspaceSection =
+    workspaceNavSections.find((section) => section.views.some((view) => view.id === activeViewId)) ?? workspaceNavSections[0]
+  const totalWorkbenchStagedChanges =
+    portsStagedDrafts.length +
+    receiverStagedDrafts.length +
+    outputReviewStagedDrafts.length +
+    outputAssignmentStagedDrafts.length +
+    outputNotificationStagedDrafts.length +
+    powerStagedDrafts.length +
+    tuningStagedDrafts.length
+  const totalWorkbenchInvalidChanges =
+    portsInvalidDrafts.length +
+    receiverInvalidDrafts.length +
+    outputReviewInvalidDrafts.length +
+    outputAssignmentInvalidDrafts.length +
+    outputNotificationInvalidDrafts.length +
+    powerInvalidDrafts.length +
+    tuningInvalidDrafts.length
+  const nextFocus = (() => {
+    if (parameterFollowUp) {
+      return {
+        title: parameterFollowUp.requiresReboot ? 'Reboot and refresh the session' : 'Refresh the live baseline',
+        detail: parameterFollowUp.text,
+        viewId: 'snapshots' as AppViewId,
+        actionLabel: parameterFollowUp.requiresReboot ? 'Open Snapshots & Restore' : 'Review Live Drift'
+      }
+    }
+
+    if (!guidedSetupComplete) {
+      return {
+        title: `Continue ${selectedSetupSection.title}`,
+        detail: selectedSetupSection.detail,
+        viewId: 'setup' as AppViewId,
+        actionLabel: 'Open Flight Deck'
+      }
+    }
+
+    if (selectedSnapshotChangedEntries.length > 0) {
+      return {
+        title: 'Review drift against the active baseline',
+        detail: `${selectedSnapshotChangedEntries.length} snapshot difference(s) are active against ${selectedSnapshot?.label ?? 'the selected baseline'}.`,
+        viewId: 'snapshots' as AppViewId,
+        actionLabel: 'Open Snapshots & Restore'
+      }
+    }
+
+    if (totalWorkbenchStagedChanges > 0 || stagedParameterDrafts.length > 0) {
+      return {
+        title: 'Resolve staged changes before moving on',
+        detail: `${totalWorkbenchStagedChanges + stagedParameterDrafts.length} staged change(s) are waiting for review or apply.`,
+        viewId: activeViewId,
+        actionLabel: 'Stay in Current Workspace'
+      }
+    }
+
+    return {
+      title: `Work the ${missionTitleForView(activeViewDescriptor.id)} surface`,
+      detail: activeViewDescriptor.description,
+      viewId: activeViewDescriptor.id,
+      actionLabel: 'Stay Focused Here'
+    }
+  })()
   function formatCategoryLabel(categoryId: string | undefined): string {
     if (!categoryId) {
       return 'Uncategorized'
@@ -4649,6 +4871,37 @@ export function App() {
     }
   }, [recommendedSetupSection, selectedSetupSectionCandidate])
 
+  function openSetupWizard(sectionId?: string): void {
+    if (sectionId) {
+      setSelectedSetupSectionId(sectionId)
+    } else if (recommendedSetupSection) {
+      setSelectedSetupSectionId(recommendedSetupSection.id)
+    }
+    setSetupMode('wizard')
+  }
+
+  function closeSetupWizard(): void {
+    setSetupMode('overview')
+  }
+
+  function moveSetupWizard(offset: -1 | 1): void {
+    if (!selectedSetupSection) {
+      return
+    }
+
+    const nextIndex = selectedSetupSectionIndex + offset
+    if (nextIndex < 0 || nextIndex >= setupFlowSections.length) {
+      return
+    }
+
+    const targetSection = setupFlowSections[nextIndex]
+    if (targetSection.sequenceState === 'locked') {
+      return
+    }
+
+    setSelectedSetupSectionId(targetSection.id)
+  }
+
   useEffect(() => {
     if (typeof window === 'undefined') {
       return
@@ -4759,15 +5012,20 @@ export function App() {
     }
   }
 
+  function returnToMissionControl(): void {
+    setActiveViewId('setup')
+    setSetupMode('overview')
+  }
+
   return (
 	    <main className="app-shell">
 	      <header className="app-header">
 	        <div className="app-header__brand">
             <div className="app-header__mark">AC</div>
 	          <div>
-	            <p className="eyebrow">ArduPilot FPV Configurator</p>
+	            <p className="eyebrow">ArduPilot Multirotor Operator Console</p>
 	            <h1>ArduConfigurator</h1>
-	            <p className="app-header__lede">A cleaner setup-first browser configurator for ArduCopter FPV work.</p>
+	            <p className="app-header__lede">Configure, validate, and recover ArduPilot multirotors from one live bench console.</p>
 	          </div>
 	        </div>
           <div className="app-header__summary">
@@ -4906,29 +5164,119 @@ export function App() {
               ) : null}
             </section>
 
-            <nav className="workspace-nav" aria-label="Primary configurator views">
-              {visibleAppViews.map((view) => (
-                <button
-                  key={view.id}
-                  type="button"
-                  data-testid={`view-button-${view.id}`}
-                  className={`workspace-nav__item${view.id === activeViewId ? ' is-active' : ''}`}
-                  onClick={() => setActiveViewId(view.id)}
-                >
-                  <div className="workspace-nav__item-copy">
-                    <span className="workspace-nav__mark">{viewMonogram(view.id)}</span>
-                    <strong>{view.label}</strong>
+            {workspaceNavSections.map((section) => (
+              <section key={section.id} className="workspace-rail-section workspace-rail-section--mission">
+                <div className="workspace-rail-section__header">
+                  <div>
+                    <strong>{section.label}</strong>
+                    <small>{section.description}</small>
                   </div>
-                  <StatusBadge tone={view.tone}>{view.badge}</StatusBadge>
+                  <StatusBadge tone={section.views.some((view) => view.id === activeViewId) ? 'warning' : 'neutral'}>
+                    {section.views.length}
+                  </StatusBadge>
+                </div>
+
+                <nav className="workspace-nav workspace-nav--grouped" aria-label={`${section.label} views`}>
+                  {section.views.map((view) => (
+                    <button
+                      key={view.id}
+                      type="button"
+                      data-testid={`view-button-${view.id}`}
+                      className={`workspace-nav__item${view.id === activeViewId ? ' is-active' : ''}`}
+                      onClick={() => setActiveViewId(view.id)}
+                    >
+                      <div className="workspace-nav__item-copy">
+                        <span className="workspace-nav__mark">{viewMonogram(view.id)}</span>
+                        <div className="workspace-nav__item-text">
+                          <strong>{missionTitleForView(view.id)}</strong>
+                          <small>{view.description}</small>
+                        </div>
+                      </div>
+                      <StatusBadge tone={view.tone}>{view.badge}</StatusBadge>
+                    </button>
+                  ))}
+                </nav>
+              </section>
+            ))}
+
+            <section className="workspace-rail-section workspace-rail-section--command">
+              <div className="workspace-rail-section__header">
+                <div>
+                  <strong>Change Control</strong>
+                  <small>Keep baselines, staged work, and follow-up actions visible everywhere.</small>
+                </div>
+                <StatusBadge tone={totalWorkbenchInvalidChanges > 0 ? 'danger' : totalWorkbenchStagedChanges > 0 || stagedParameterDrafts.length > 0 ? 'warning' : 'success'}>
+                  {totalWorkbenchInvalidChanges > 0
+                    ? `${totalWorkbenchInvalidChanges} invalid`
+                    : totalWorkbenchStagedChanges + stagedParameterDrafts.length > 0
+                      ? `${totalWorkbenchStagedChanges + stagedParameterDrafts.length} staged`
+                      : 'clean'}
+                </StatusBadge>
+              </div>
+
+              <div className="workspace-focus-card">
+                <div className="workspace-focus-card__header">
+                  <strong>Next focus</strong>
+                  <StatusBadge tone={nextFocus.viewId === activeViewId ? 'success' : 'warning'}>
+                    {missionSectionLabelForView(nextFocus.viewId)}
+                  </StatusBadge>
+                </div>
+                <p>{nextFocus.title}</p>
+                <small>{nextFocus.detail}</small>
+                <div className="button-row">
+                  <button style={buttonStyle('primary')} onClick={() => setActiveViewId(nextFocus.viewId)}>
+                    {nextFocus.actionLabel}
+                  </button>
+                </div>
+              </div>
+
+              <div className="change-control-dock">
+                <article className="change-control-dock__item">
+                  <span>Baseline</span>
+                  <strong data-testid={selectedSnapshot ? 'active-baseline-label' : undefined}>
+                    {selectedSnapshot ? selectedSnapshot.label : 'No baseline selected'}
+                  </strong>
+                  <small>
+                    {selectedSnapshot
+                      ? `${selectedSnapshotChangedEntries.length} drift · ${selectedSnapshotRebootSensitiveCount} reboot-sensitive`
+                      : 'Capture or select a snapshot before larger changes.'}
+                  </small>
+                </article>
+                <article className="change-control-dock__item">
+                  <span>Workbench drafts</span>
+                  <strong>{totalWorkbenchStagedChanges + stagedParameterDrafts.length}</strong>
+                  <small>
+                    {totalWorkbenchInvalidChanges > 0
+                      ? `${totalWorkbenchInvalidChanges} invalid values need attention`
+                      : totalWorkbenchStagedChanges + stagedParameterDrafts.length > 0
+                        ? 'Staged changes are waiting for apply or discard'
+                        : 'No staged changes across the current mission workspaces'}
+                  </small>
+                </article>
+                <article className="change-control-dock__item">
+                  <span>Session follow-up</span>
+                  <strong>{parameterFollowUp ? (parameterFollowUp.requiresReboot ? 'Reboot required' : 'Refresh required') : 'Clear'}</strong>
+                  <small>{parameterFollowUp ? parameterFollowUp.text : 'The live snapshot matches the current session state.'}</small>
+                </article>
+              </div>
+
+              <div className="button-row">
+                <button data-testid="open-snapshots-button" style={buttonStyle('primary')} onClick={() => setActiveViewId('snapshots')}>
+                  {selectedSnapshot ? 'Open Snapshots & Restore' : 'Open Snapshots'}
                 </button>
-              ))}
-            </nav>
+                {selectedSnapshotChangedEntries.length > 0 ? (
+                  <button style={buttonStyle()} onClick={() => setActiveViewId('snapshots')}>
+                    Review Restore Diff
+                  </button>
+                ) : null}
+              </div>
+            </section>
 
             <section className="workspace-rail-section workspace-rail-section--workspace">
               <div className="workspace-rail-section__header">
                 <div>
-                  <strong>Workspace</strong>
-                  <small>Basic for setup. Expert for raw parameter work.</small>
+                  <strong>Access Level</strong>
+                  <small>Basic stays mission-focused. Expert exposes the low-level parameter workspace.</small>
                 </div>
                 <StatusBadge tone={isExpertMode ? 'warning' : 'success'}>{isExpertMode ? 'expert' : 'basic'}</StatusBadge>
               </div>
@@ -4952,49 +5300,10 @@ export function App() {
                 </button>
               </div>
 
-              {selectedSnapshot ? (
-                <div className="baseline-strip">
-                  <div className="baseline-strip__copy">
-                    <div>
-                      <strong data-testid="active-baseline-label">{selectedSnapshot.label}</strong>
-                      <small>{formatSnapshotTimestamp(selectedSnapshot.capturedAt)}</small>
-                    </div>
-                    <StatusBadge tone={selectedSnapshotStatusTone}>{selectedSnapshotStatusLabel}</StatusBadge>
-                  </div>
-
-                  <div className="config-pills">
-                    <span>{selectedSnapshot.source === 'captured' ? 'captured here' : 'imported'}</span>
-                    <span>{selectedSnapshot.backup.parameterCount} params</span>
-                    <span>{selectedSnapshotChangedEntries.length} drift</span>
-                    <span>{selectedSnapshotRebootSensitiveCount} reboot</span>
-                    {selectedSnapshot.protected ? <span className="is-target">protected</span> : null}
-                    {selectedSnapshot.tags.slice(0, 2).map((tag) => (
-                      <span key={`${selectedSnapshot.id}:sidebar:${tag}`}>#{tag}</span>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <div className="workspace-mode-summary workspace-mode-summary--muted workspace-mode-summary--compact">
-                  <StatusBadge tone="neutral">no baseline</StatusBadge>
-                  <p>No snapshot baseline selected yet.</p>
-                </div>
-              )}
-
-              <div className="button-row">
-                <button data-testid="open-snapshots-button" style={buttonStyle('primary')} onClick={() => setActiveViewId('snapshots')}>
-                  {selectedSnapshot ? 'Open Snapshot Library' : 'Open Snapshots'}
-                </button>
-                {selectedSnapshotChangedEntries.length > 0 ? (
-                  <button style={buttonStyle()} onClick={() => setActiveViewId('snapshots')}>
-                    Review Restore Diff
-                  </button>
-                ) : null}
-              </div>
-
               {!isExpertMode ? (
                 <div className="workspace-mode-summary workspace-mode-summary--muted workspace-mode-summary--compact">
-                  <StatusBadge tone="neutral">hidden</StatusBadge>
-                  <p>{appViews.filter((view) => isExpertOnlyView(view.id)).map((view) => view.label).join(', ')} stay hidden.</p>
+                  <StatusBadge tone="neutral">guided</StatusBadge>
+                  <p>{appViews.filter((view) => isExpertOnlyView(view.id)).map((view) => missionTitleForView(view.id)).join(', ')} stay tucked away.</p>
                 </div>
               ) : null}
 
@@ -5009,273 +5318,391 @@ export function App() {
         </aside>
 
         <div className="workspace-main">
-      {activeViewId === 'setup' ? (
-      <>
-      <section className="grid one-up">
-        <div id="setup-panel-link">
-          <Panel
-            title="Setup Overview"
-            subtitle="Live attitude, vehicle state, and the most relevant setup status in one place."
-          >
-            <div className="setup-overview">
-              <div className="setup-overview__visual">
-                <AttitudePreview
-                  snapshot={snapshot}
-                  frameClassLabel={airframe.frameClassLabel}
-                  frameTypeLabel={airframe.frameTypeLabel}
-                />
+          {activeViewDescriptor ? (
+            <header className="workspace-main__header">
+              <div>
+                <div className="workspace-main__eyebrow-row">
+                  <button
+                    type="button"
+                    data-testid="return-mission-control-button"
+                    className={`workspace-home-button${activeViewId === 'setup' && setupMode === 'overview' ? ' is-active' : ''}`}
+                    onClick={returnToMissionControl}
+                    aria-label="Return to Mission Control"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M4.5 11.4L12 5.25l7.5 6.15" />
+                      <path d="M7.5 10.9V18h9v-7.1" />
+                      <path d="M10.25 18v-4.75h3.5V18" />
+                    </svg>
+                    <span>Mission Control</span>
+                  </button>
+                  <span className="workspace-main__eyebrow">{activeWorkspaceSection?.label ?? missionSectionLabelForView(activeViewDescriptor.id)}</span>
+                  <StatusBadge tone={activeViewDescriptor.tone}>{activeViewDescriptor.badge}</StatusBadge>
+                </div>
+                <h2>{missionTitleForView(activeViewDescriptor.id)}</h2>
+                <p>{activeViewDescriptor.description}</p>
               </div>
-
-              <div className="setup-overview__summary">
-                <div className="setup-overview__facts">
-                  <div className="setup-overview__fact-list">
-                    <KeyValueRow label="Transport" value={
-                      transportMode === 'demo'
-                        ? 'Demo MAVLink stream'
-                        : transportMode === 'web-serial'
-                          ? webSerialSupported
-                            ? 'Browser Web Serial'
-                            : 'Unavailable'
-                          : `WebSocket (${websocketUrl})`
-                    } />
-                    <KeyValueRow label="Session" value={snapshot.sessionProfile === 'usb-bench' ? 'USB Bench' : 'Full Power'} />
-                    <KeyValueRow label="Vehicle" value={snapshot.vehicle?.vehicle ?? 'Waiting for heartbeat'} />
-                    <KeyValueRow label="Firmware" value={snapshot.vehicle?.firmware ?? 'Unknown'} />
-                    <KeyValueRow label="RC Link" value={formatRcLink(snapshot)} />
-                    <KeyValueRow label="Battery" value={formatBatteryTelemetry(snapshot)} />
-                  </div>
-
-                  <div className="setup-overview__fact-grid">
-                    <article className="telemetry-metric-card">
-                      <span>Mode</span>
-                      <strong>{snapshot.vehicle?.flightMode ?? 'Unknown'}</strong>
-                    </article>
-                    <article className="telemetry-metric-card">
-                      <span>Parameters</span>
-                      <strong>
-                        {snapshot.parameterStats.status === 'complete'
-                          ? `${snapshot.parameterStats.downloaded}/${snapshot.parameterStats.total || snapshot.parameterStats.downloaded}`
-                          : formatParameterSync(snapshot)}
-                      </strong>
-                    </article>
-                    <article className="telemetry-metric-card">
-                      <span>Pre-arm</span>
-                      <strong>{snapshot.preArmStatus.healthy ? 'Clear' : `${snapshot.preArmStatus.issues.length} issue(s)`}</strong>
-                    </article>
-                    <article className="telemetry-metric-card">
-                      <span>Airframe</span>
-                      <strong>{airframe.frameClassLabel}</strong>
-                    </article>
-                  </div>
+              <div className="workspace-main__summary">
+                <div className="workspace-main__summary-card">
+                  <span>Aircraft state</span>
+                  <strong>{snapshot.vehicle?.flightMode ?? 'No active mode yet'}</strong>
+                  <small>
+                    {snapshot.connection.kind === 'connected'
+                      ? snapshot.preArmStatus.healthy
+                        ? 'Connected, synced, and pre-arm clear'
+                        : `${snapshot.preArmStatus.issues.length} pre-arm issue(s) still active`
+                      : 'Connect to start working from the live vehicle'}
+                  </small>
                 </div>
-
-                <div className="setup-overview__signal-row">
-                  <span className={snapshot.liveVerification.rcInput.verified ? 'is-complete' : undefined}>
-                    {snapshot.liveVerification.rcInput.verified ? `${snapshot.liveVerification.rcInput.channelCount} RC channels live` : 'RC waiting'}
-                  </span>
-                  <span className={snapshot.liveVerification.batteryTelemetry.verified ? 'is-complete' : undefined}>
-                    {snapshot.liveVerification.batteryTelemetry.verified ? 'Battery telemetry live' : 'Battery telemetry waiting'}
-                  </span>
-                  <span className={snapshot.liveVerification.attitudeTelemetry.verified ? 'is-complete' : undefined}>
-                    {snapshot.liveVerification.attitudeTelemetry.verified ? 'Attitude telemetry live' : 'Attitude waiting'}
-                  </span>
-                  <span className={snapshot.preArmStatus.healthy ? 'is-complete' : 'is-target'}>
-                    {snapshot.preArmStatus.healthy ? 'Pre-arm clear' : `${snapshot.preArmStatus.issues.length} pre-arm issue(s)`}
-                  </span>
-                </div>
-
-                <div className={`setup-overview__notice${snapshot.preArmStatus.healthy ? ' is-healthy' : ''}`}>
-                  <strong>{snapshot.preArmStatus.healthy ? 'Ready for the next setup step' : 'Pre-arm attention required'}</strong>
-                  <p>
-                    {snapshot.preArmStatus.healthy
-                      ? 'Use the guided flow below, then move into Ports, Receiver, Outputs, or Power for focused configuration work.'
-                      : snapshot.preArmStatus.issues.slice(0, 2).map((issue) => issue.text).join(' · ')}
-                  </p>
-                </div>
-
-                <div className="setup-overview__status-strip">
-                  <div className="switch-exercise-card__header">
-                    <div>
-                      <strong>Recent status</strong>
-                      <p>Most recent autopilot text relevant to setup and safety.</p>
-                    </div>
-                    <StatusBadge tone={snapshot.statusTexts.some((entry) => entry.severity === 'error') ? 'danger' : 'neutral'}>
-                      {snapshot.statusTexts.length} lines
-                    </StatusBadge>
-                  </div>
-                  <div className="status-log">
-                    {snapshot.statusTexts.length === 0 ? <p>No status text received yet.</p> : null}
-                    {snapshot.statusTexts.slice(0, 4).map((entry) => (
-                      <div key={`${entry.severity}-${entry.text}`} className={`status-entry ${entry.severity}`}>
-                        <strong>{entry.severity}</strong>
-                        <span>{entry.text}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="button-row">
+              </div>
+            </header>
+          ) : null}
+	      {activeViewId === 'setup' ? (
+	      <>
+	      <section className="grid one-up">
+	        <Panel
+	          title={setupMode === 'wizard' ? 'Guided Setup' : 'Mission Control'}
+	          subtitle={
+              setupMode === 'wizard'
+                ? 'Work one setup step at a time with a single active task, clear evidence, and explicit next actions.'
+                : 'Live aircraft state, bench readiness, and setup progress in one integrated operator console.'
+            }
+	          actions={
+	            <div className="button-row">
+                {setupMode === 'wizard' && selectedSetupSection ? (
+                  <StatusBadge tone={toneForSetup(selectedSetupSection.status)}>
+                    Step {selectedSetupSectionIndex + 1}/{setupFlowSections.length}
+                  </StatusBadge>
+                ) : (
+	                <StatusBadge tone={guidedSetupComplete ? 'success' : 'warning'}>
+	                  {completedSetupSectionCount}/{setupFlowSections.length} complete
+	                </StatusBadge>
+                )}
+                {setupMode === 'wizard' ? (
+                  <button style={buttonStyle()} onClick={closeSetupWizard}>
+                    Back to Mission Control
+                  </button>
+                ) : (
                   <button
                     style={buttonStyle('primary')}
-                    onClick={() => void handleGuidedAction('request-parameters')}
-                    disabled={busyAction !== undefined || !canRunGuidedAction(snapshot, 'request-parameters')}
+                    onClick={() => openSetupWizard()}
+                    disabled={!recommendedSetupSection}
+                    data-testid="setup-start-guided-button"
                   >
-                    {guidedActionButtonLabel('request-parameters', snapshot, busyAction)}
+                    {guidedSetupComplete ? 'Review Guided Setup' : completedSetupSectionCount > 0 ? 'Resume Guided Setup' : 'Start Guided Setup'}
                   </button>
-                  <button style={buttonStyle()} onClick={() => setActiveViewId('snapshots')}>
-                    Open Snapshot Library
-                  </button>
-                  <button style={buttonStyle()} onClick={() => setActiveViewId('outputs')}>
-                    Review Outputs
-                  </button>
-                </div>
-              </div>
-            </div>
-          </Panel>
-        </div>
-      </section>
+                )}
+	            </div>
+	          }
+	        >
+	          <div className="setup-command-center">
+              {setupMode === 'overview' ? (
+                <>
+  	              <div id="setup-panel-link" className="setup-command-center__hero">
+	                <div className="setup-command-center__visual">
+	                  <AttitudePreview
+	                    snapshot={snapshot}
+	                    frameClassLabel={airframe.frameClassLabel}
+	                    frameTypeLabel={airframe.frameTypeLabel}
+	                  />
+                    {gpsPeripheralViewModels.length > 0 || snapshot.liveVerification.globalPosition.verified ? (
+                      <LiveGpsMapCard
+                        snapshot={snapshot}
+                        title="Aircraft location"
+                        subtitle="Read-only global position context from the flight controller."
+                        compact
+                        testId="setup-gps-map-widget"
+                      />
+                    ) : null}
+	                </div>
 
-      {selectedSetupSection ? (
-        <Panel
-          title="Setup Flow"
-          subtitle="Guided sequence for the current setup session."
-          actions={
-            <div className="button-row">
-              <StatusBadge tone={completedSetupSectionCount === setupFlowSections.length ? 'success' : 'warning'}>
-                {completedSetupSectionCount}/{setupFlowSections.length} complete
-              </StatusBadge>
-              <button
-                style={buttonStyle()}
-                onClick={() => setSelectedSetupSectionId(recommendedSetupSection?.id)}
-                disabled={!recommendedSetupSection || recommendedSetupSection.id === selectedSetupSection.id}
-              >
-                Focus Next Incomplete
-              </button>
-            </div>
-          }
-        >
-          <div className="setup-flow">
-            {guidedSetupComplete ? (
-              <div className="setup-flow__banner setup-flow__banner--success">
-                <div>
-                  <strong>Guided setup complete</strong>
-                  <p>
-                    Every guided setup step for this session has been verified and operator-confirmed. You can move on to parameter refinement,
-                    optional motor testing, or backup/export work.
-                  </p>
-                </div>
-              </div>
-            ) : null}
+  	                <div className="setup-command-center__state-board">
+  	                  <div className="setup-command-center__metric-grid">
+  	                    <article className="telemetry-metric-card">
+  	                      <span>Mode</span>
+  	                      <strong>{snapshot.vehicle?.flightMode ?? 'Unknown'}</strong>
+  	                    </article>
+  	                    <article className="telemetry-metric-card">
+  	                      <span>Parameters</span>
+  	                      <strong>
+  	                        {snapshot.parameterStats.status === 'complete'
+  	                          ? `${snapshot.parameterStats.downloaded}/${snapshot.parameterStats.total || snapshot.parameterStats.downloaded}`
+  	                          : formatParameterSync(snapshot)}
+  	                      </strong>
+  	                    </article>
+  	                    <article className="telemetry-metric-card">
+  	                      <span>Pre-arm</span>
+  	                      <strong>{snapshot.preArmStatus.healthy ? 'Clear' : `${snapshot.preArmStatus.issues.length} issue(s)`}</strong>
+  	                    </article>
+  	                    <article className="telemetry-metric-card">
+  	                      <span>Airframe</span>
+  	                      <strong>{airframe.frameClassLabel}</strong>
+  	                    </article>
+  	                  </div>
 
-            {setupFlowFollowUp ? (
-              <div className={`setup-flow__banner setup-flow__banner--${setupFlowFollowUp.tone}`}>
-                <div>
-                  <strong>{setupFlowFollowUp.title}</strong>
-                  <p>{setupFlowFollowUp.text}</p>
-                </div>
-                {setupFlowFollowUp.actions.length > 0 ? (
-                  <div className="setup-flow__actions">
-                    {setupFlowFollowUp.actions.map((action) => (
+  	                  <div className="setup-overview__signal-row">
+  	                    <span className={snapshot.liveVerification.rcInput.verified ? 'is-complete' : undefined}>
+  	                      {snapshot.liveVerification.rcInput.verified ? `${snapshot.liveVerification.rcInput.channelCount} RC channels live` : 'RC waiting'}
+  	                    </span>
+  	                    <span className={snapshot.liveVerification.batteryTelemetry.verified ? 'is-complete' : undefined}>
+  	                      {snapshot.liveVerification.batteryTelemetry.verified ? 'Battery telemetry live' : 'Battery telemetry waiting'}
+  	                    </span>
+  	                    <span className={snapshot.liveVerification.attitudeTelemetry.verified ? 'is-complete' : undefined}>
+  	                      {snapshot.liveVerification.attitudeTelemetry.verified ? 'Attitude telemetry live' : 'Attitude waiting'}
+  	                    </span>
+  	                    <span className={snapshot.preArmStatus.healthy ? 'is-complete' : 'is-target'}>
+  	                      {snapshot.preArmStatus.healthy ? 'Pre-arm clear' : `${snapshot.preArmStatus.issues.length} pre-arm issue(s)`}
+  	                    </span>
+  	                  </div>
+
+  	                  <div className={`setup-overview__notice${snapshot.preArmStatus.healthy ? ' is-healthy' : ''}`}>
+  	                    <strong>{guidedSetupComplete ? 'Guided setup complete' : 'Next guided setup step ready'}</strong>
+  	                    <p>
+                          {guidedSetupComplete
+                            ? 'Setup is fully signed off for this session. Use the main navigation for refinement, backups, or additional bench validation.'
+                            : selectedSetupSection
+                              ? `${selectedSetupSection.title}: ${selectedSetupSection.summary}`
+                              : 'Start guided setup to move through one aircraft step at a time.'}
+  	                    </p>
+  	                  </div>
+
+  	                  <div className="setup-overview__launch-row">
+  	                    <button
+  	                      style={buttonStyle('primary')}
+  	                      onClick={() => openSetupWizard()}
+  	                      disabled={!recommendedSetupSection}
+  	                    >
+                          {guidedSetupComplete ? 'Review Guided Setup' : completedSetupSectionCount > 0 ? `Resume ${recommendedSetupSection?.title ?? 'Setup'}` : 'Start Guided Setup'}
+  	                    </button>
+                        <small>
+                          {guidedSetupComplete
+                            ? 'All setup steps are complete.'
+                            : selectedSetupSection
+                              ? `One active task at a time. Next step: ${selectedSetupSection.title}.`
+                              : 'The wizard will focus the current incomplete setup step.'}
+                        </small>
+  	                  </div>
+  	                </div>
+  	              </div>
+
+  	              <div className="setup-command-center__status-grid">
+  	                <div className="setup-command-center__fact-list">
+  	                  <KeyValueRow label="Transport" value={
+  	                    transportMode === 'demo'
+  	                      ? 'Demo MAVLink stream'
+  	                      : transportMode === 'web-serial'
+  	                        ? webSerialSupported
+  	                          ? 'Browser Web Serial'
+  	                          : 'Unavailable'
+  	                        : `WebSocket (${websocketUrl})`
+  	                  } />
+  	                  <KeyValueRow label="Session" value={snapshot.sessionProfile === 'usb-bench' ? 'USB Bench' : 'Full Power'} />
+  	                  <KeyValueRow label="Vehicle" value={snapshot.vehicle?.vehicle ?? 'Waiting for heartbeat'} />
+  	                  <KeyValueRow label="Firmware" value={snapshot.vehicle?.firmware ?? 'Unknown'} />
+  	                  <KeyValueRow label="RC Link" value={formatRcLink(snapshot)} />
+  	                  <KeyValueRow label="Battery" value={formatBatteryTelemetry(snapshot)} />
+  	                </div>
+
+  	                <div className="setup-command-center__status-strip">
+  	                  <div className="switch-exercise-card__header">
+  	                    <div>
+  	                      <strong>Recent status</strong>
+  	                      <p>Latest autopilot text relevant to setup readiness and safety.</p>
+  	                    </div>
+  	                    <StatusBadge tone={snapshot.statusTexts.some((entry) => entry.severity === 'error') ? 'danger' : 'neutral'}>
+  	                      {snapshot.statusTexts.length} lines
+  	                    </StatusBadge>
+  	                  </div>
+  	                  <div className="status-log">
+  	                    {snapshot.statusTexts.length === 0 ? <p>No status text received yet.</p> : null}
+  	                    {snapshot.statusTexts.slice(0, 4).map((entry) => (
+  	                      <div key={`${entry.severity}-${entry.text}`} className={`status-entry ${entry.severity}`}>
+  	                        <strong>{entry.severity}</strong>
+  	                        <span>{entry.text}</span>
+  	                      </div>
+  	                    ))}
+  	                  </div>
+  	                  </div>
+  	              </div>
+
+                  {guidedSetupComplete ? (
+                    <div className="setup-flow__banner setup-flow__banner--success">
+                      <div>
+                        <strong>Guided setup complete</strong>
+                        <p>
+                          Every guided setup step for this session has been verified and operator-confirmed. You can move on to refinement, backup,
+                          or optional bench validation from the main workspace navigation.
+                        </p>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {setupFlowFollowUp ? (
+                    <div className={`setup-flow__banner setup-flow__banner--${setupFlowFollowUp.tone}`}>
+                      <div>
+                        <strong>{setupFlowFollowUp.title}</strong>
+                        <p>{setupFlowFollowUp.text}</p>
+                      </div>
+                    </div>
+                  ) : null}
+                </>
+              ) : selectedSetupSection ? (
+                <div id="setup-panel-guided" className="setup-wizard" data-testid="setup-wizard">
+                  <div className="setup-wizard__header">
+                    <div>
+                      <p className="eyebrow">Step {selectedSetupSectionIndex + 1} of {setupFlowSections.length}</p>
+                      <h3>{selectedSetupSection.title}</h3>
+                      <p>{selectedSetupSection.summary}</p>
+                    </div>
+                    <div className="setup-wizard__header-status">
+                      <StatusBadge tone={toneForSetupSequence(selectedSetupSection.sequenceState)}>{selectedSetupSection.sequenceState}</StatusBadge>
+                      <StatusBadge tone={toneForSetup(selectedSetupSection.status)}>
+                        {selectedSetupSection.criteriaMetCount}/{selectedSetupSection.criteria.length} criteria
+                      </StatusBadge>
+                    </div>
+                  </div>
+
+                  <div className="switch-exercise-progress" aria-hidden="true">
+                    <div className="switch-exercise-progress__fill" style={{ width: `${setupFlowProgress}%` }} />
+                  </div>
+
+                  <div className="setup-wizard__steps">
+                    {setupFlowSections.map((section, index) => (
                       <button
-                        key={`setup-follow-up:${action.kind}:${action.label}`}
-                        style={buttonStyle(action.tone ?? 'secondary')}
-                        onClick={() => handleSetupFlowAction(action)}
-                        disabled={action.disabled}
+                        key={section.id}
+                        type="button"
+                        className={`setup-wizard-step${section.id === selectedSetupSection.id ? ' is-active' : ''}${section.status === 'complete' ? ' is-complete' : ''}${section.sequenceState === 'current' ? ' is-current' : ''}${section.sequenceState === 'locked' ? ' is-locked' : ''}`}
+                        onClick={() => {
+                          setSelectedSetupSectionId(section.id)
+                          setSetupMode('wizard')
+                        }}
+                        disabled={section.sequenceState === 'locked'}
                       >
-                        {action.label}
+                        <small>Step {index + 1}</small>
+                        <span>{section.title}</span>
                       </button>
                     ))}
                   </div>
-                ) : null}
-              </div>
-            ) : null}
 
-            <div className="setup-flow__current">
-              <div>
-                <p className="eyebrow">Current Step</p>
-                <h3>{selectedSetupSection.title}</h3>
-                <p>{selectedSetupSection.summary}</p>
-              </div>
-              <div className="setup-flow__current-status">
-                <StatusBadge tone={toneForSetupSequence(selectedSetupSection.sequenceState)}>{selectedSetupSection.sequenceState}</StatusBadge>
-                <StatusBadge tone={toneForSetup(selectedSetupSection.status)}>
-                  {selectedSetupSection.criteriaMetCount}/{selectedSetupSection.criteria.length} criteria
-                </StatusBadge>
-              </div>
-            </div>
+                  {setupFlowFollowUp ? (
+                    <div className={`setup-flow__banner setup-flow__banner--${setupFlowFollowUp.tone}`}>
+                      <div>
+                        <strong>{setupFlowFollowUp.title}</strong>
+                        <p>{setupFlowFollowUp.text}</p>
+                      </div>
+                    </div>
+                  ) : null}
 
-            <div className="switch-exercise-progress" aria-hidden="true">
-              <div className="switch-exercise-progress__fill" style={{ width: `${setupFlowProgress}%` }} />
-            </div>
+                  <div className="setup-wizard__body">
+                    <div className="setup-wizard__main">
+                      <div className="setup-wizard__detail">
+                        <div>
+                          <h4>What to do</h4>
+                          <p>{selectedSetupSection.detail}</p>
+                        </div>
 
-            <div className="setup-flow__steps">
-              {setupFlowSections.map((section, index) => (
-                <button
-                  key={section.id}
-                  type="button"
-                  className={`setup-flow-step${section.id === selectedSetupSection.id ? ' is-active' : ''}${section.status === 'complete' ? ' is-complete' : ''}${section.sequenceState === 'current' ? ' is-current' : ''}${section.sequenceState === 'locked' ? ' is-locked' : ''}`}
-                  onClick={() => setSelectedSetupSectionId(section.id)}
-                  disabled={section.sequenceState === 'locked'}
-                >
-                  <small className="setup-flow-step__eyebrow">Step {index + 1}</small>
-                  <span>{section.title}</span>
-                  <small>{section.sequenceState === 'locked' ? section.blockingReason ?? section.summary : section.summary}</small>
-                  <div className="setup-flow-step__meta">
-                    <StatusBadge tone={toneForSetupSequence(section.sequenceState)}>{section.sequenceState}</StatusBadge>
-                    <span>
-                      {section.criteriaMetCount}/{section.criteria.length} criteria
-                    </span>
+                        <div className="setup-flow__criteria">
+                          <strong>Completion Criteria</strong>
+                          <ul>
+                            {selectedSetupSection.criteria.map((criterion) => (
+                              <li key={criterion.label} className={criterion.met ? 'is-met' : undefined}>
+                                <span>{criterion.met ? 'Complete' : 'Pending'}</span>
+                                <span>{criterion.label}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+
+                        {selectedSetupSection.evidence.length > 0 ? (
+                          <div className="setup-wizard__evidence">
+                            <strong>Live Evidence</strong>
+                            <div className="config-pills">
+                              {selectedSetupSection.evidence.map((item) => (
+                                <span key={item}>{item}</span>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {selectedSetupSection.blockingReason ? <p className="setup-flow__blocking-copy">{selectedSetupSection.blockingReason}</p> : null}
+                      </div>
+
+                      {['airframe', 'accelerometer', 'compass'].includes(selectedSetupSection.id)
+                        ? renderAdditionalSettingsCard(
+                            'Advanced setup settings',
+                            'Board orientation, sensor, and related setup parameters stay attached to the guided flow when this step needs them.',
+                            setupAdditionalGroups,
+                            setupAdditionalDraftEntries,
+                            setupAdditionalStagedDrafts,
+                            setupAdditionalInvalidDrafts,
+                            'setup:additional',
+                            'Apply Setup Changes',
+                            'advanced setup settings'
+                          )
+                        : null}
+                    </div>
+
+                    <aside className="setup-wizard__aside">
+                      <div className="setup-wizard__action-card">
+                        <strong>Next Action</strong>
+                        <p>
+                          {guidedSetupPrimaryAction
+                            ? guidedSetupPrimaryAction.label
+                            : 'Complete the current criteria or use the workspace navigation for more context.'}
+                        </p>
+                        {guidedSetupPrimaryAction ? (
+                          <button
+                            style={buttonStyle(guidedSetupPrimaryAction.tone ?? 'primary')}
+                            onClick={() => handleSetupFlowAction(guidedSetupPrimaryAction)}
+                            disabled={guidedSetupPrimaryAction.disabled}
+                          >
+                            {guidedSetupPrimaryAction.label}
+                          </button>
+                        ) : null}
+                        {guidedSetupContextAction ? (
+                          <button
+                            style={buttonStyle(guidedSetupContextAction.tone ?? 'secondary')}
+                            onClick={() => handleSetupFlowAction(guidedSetupContextAction)}
+                            disabled={guidedSetupContextAction.disabled}
+                          >
+                            {guidedSetupContextAction.label}
+                          </button>
+                        ) : null}
+                        {guidedSetupSupportActions.length > 0 ? (
+                          <div className="setup-wizard__support-actions">
+                            {guidedSetupSupportActions.map((action) => (
+                              <button
+                                key={`${selectedSetupSection.id}:${action.kind}:${action.label}`}
+                                style={buttonStyle(action.tone ?? 'secondary')}
+                                onClick={() => handleSetupFlowAction(action)}
+                                disabled={action.disabled}
+                              >
+                                {action.label}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="setup-wizard__nav">
+                        <button style={buttonStyle()} onClick={() => moveSetupWizard(-1)} disabled={!previousSetupSection}>
+                          Previous Step
+                        </button>
+                        <button
+                          style={buttonStyle('primary')}
+                          onClick={() => moveSetupWizard(1)}
+                          disabled={!nextSetupSection || selectedSetupSection.status !== 'complete'}
+                        >
+                          {nextSetupSection ? `Continue to ${nextSetupSection.title}` : 'No More Steps'}
+                        </button>
+                      </div>
+                    </aside>
                   </div>
-                </button>
-              ))}
-            </div>
-
-            <div className="setup-flow__detail">
-              <div>
-                <h3>{selectedSetupSection.title}</h3>
-                <p>{selectedSetupSection.detail}</p>
-                <div className="setup-flow__criteria">
-                  <strong>Completion Criteria</strong>
-                  <ul>
-                    {selectedSetupSection.criteria.map((criterion) => (
-                      <li key={criterion.label} className={criterion.met ? 'is-met' : undefined}>
-                        <span>{criterion.met ? 'Complete' : 'Pending'}</span>
-                        <span>{criterion.label}</span>
-                      </li>
-                    ))}
-                  </ul>
                 </div>
-                {selectedSetupSection.evidence.length > 0 ? (
-                  <div className="config-pills">
-                    {selectedSetupSection.evidence.map((item) => (
-                      <span key={item}>{item}</span>
-                    ))}
-                  </div>
-                ) : null}
-                {selectedSetupSection.blockingReason ? <p className="setup-flow__blocking-copy">{selectedSetupSection.blockingReason}</p> : null}
-              </div>
-
-              <div className="setup-flow__actions">
-                {selectedSetupSection.actions.map((action) => (
-                  <button
-                    key={`${selectedSetupSection.id}:${action.kind}:${action.label}`}
-                    style={buttonStyle(action.tone ?? 'secondary')}
-                    onClick={() => handleSetupFlowAction(action)}
-                    disabled={action.disabled}
-                  >
-                    {action.label}
-                  </button>
-                ))}
-              </div>
-
-              <small>
-                Primary surface for this step: {selectedSetupSection.panelLabel}. Use the detailed panels below for the full live context and operator
-                prompts.
-              </small>
-            </div>
-          </div>
-        </Panel>
-      ) : null}
+              ) : null}
+	          </div>
+	        </Panel>
+	      </section>
 	      </>
 	      ) : null}
 
@@ -5286,7 +5713,9 @@ export function App() {
 	            title="Ports & Peripherals"
 	            subtitle="Assign serial roles, baud rates, GPS drivers, and hardware flow-control settings without dropping into the raw parameter table."
 	          >
-	          <div className="telemetry-stack">
+		          <div className="telemetry-stack telemetry-stack--ports">
+		            <div className="ports-workspace">
+		              <div className="ports-workspace__main">
 	            <div className="telemetry-header">
 	              <div>
 	                <h3>Serial port role review</h3>
@@ -5331,8 +5760,25 @@ export function App() {
 	            </div>
 
 	            {serialPortViewModels.length > 0 ? (
+                <>
+                  <div className="scoped-review-card__disclosure">
+                    <small>
+                      {showAllSerialPorts
+                        ? `Showing all ${serialPortViewModels.length} detected serial ports.`
+                        : `Showing ${visibleSerialPortViewModels.length} active or edited port${visibleSerialPortViewModels.length === 1 ? '' : 's'} first${hiddenSerialPortCount > 0 ? `, with ${hiddenSerialPortCount} unused slot${hiddenSerialPortCount === 1 ? '' : 's'} hidden.` : '.'}`}
+                    </small>
+                    {serialPortViewModels.length > visibleSerialPortViewModels.length || showAllSerialPorts ? (
+                      <button
+                        style={buttonStyle()}
+                        onClick={() => setShowAllSerialPorts((current) => !current)}
+                        disabled={busyAction !== undefined}
+                      >
+                        {showAllSerialPorts ? 'Show Active Ports' : `Show All ${serialPortViewModels.length} Ports`}
+                      </button>
+                    ) : null}
+                  </div>
 	              <div className="port-card-grid">
-	                {serialPortViewModels.map((port) => (
+	                {visibleSerialPortViewModels.map((port) => (
 	                  <article key={port.portNumber} className="port-card">
 	                    <div className="port-card__header">
 	                      <div>
@@ -5438,11 +5884,15 @@ export function App() {
 	                  </article>
 	                ))}
 	              </div>
+                </>
 	            ) : (
 	              <p className="telemetry-note">No `SERIALx_*` parameters were detected in the current snapshot.</p>
 	            )}
 
-	            {gpsPeripheralViewModels.length > 0 ? (
+		              </div>
+		              <div className="ports-workspace__sidebar">
+
+		            {gpsPeripheralViewModels.length > 0 ? (
 	              <div className="port-card-grid">
 	                {gpsPeripheralViewModels.map((peripheral) => (
 	                  <article key={peripheral.label} className="port-card">
@@ -5484,6 +5934,15 @@ export function App() {
 	                ))}
 	              </div>
 	            ) : null}
+
+              {gpsPeripheralViewModels.length > 0 || snapshot.liveVerification.globalPosition.verified ? (
+                <LiveGpsMapCard
+                  snapshot={snapshot}
+                  title="GPS map"
+                  subtitle="Verify the live aircraft location once the GPS driver and serial link are configured."
+                  testId="ports-gps-map-widget"
+                />
+              ) : null}
 
               {gpsAutoConfigParameter || gpsAutoSwitchParameter || gpsPrimaryParameter || gpsRateParameter ? (
                 <div className="scoped-review-card scoped-review-card--compact">
@@ -5908,19 +6367,21 @@ export function App() {
                 </div>
               ) : null}
 
-              {renderAdditionalSettingsCard(
-                'Additional port settings',
-                'These metadata-backed port and peripheral settings are kept local to the Ports view so common setup work does not spill into raw Parameters.',
+	              {renderAdditionalSettingsCard(
+	                'Additional port settings',
+	                'These metadata-backed port and peripheral settings are kept local to the Ports view so common setup work does not spill into raw Parameters.',
                 portsAdditionalGroups,
                 portsAdditionalDraftEntries,
                 portsAdditionalStagedDrafts,
                 portsAdditionalInvalidDrafts,
                 'ports:additional',
-                'Apply Additional Port Changes',
-                'additional port settings'
-              )}
+	                'Apply Additional Port Changes',
+	                'additional port settings'
+	              )}
+		              </div>
+		            </div>
 
-	            <div className="switch-exercise-controls">
+		            <div className="switch-exercise-controls">
 	              <button
 	                style={buttonStyle('primary')}
 	                onClick={() => void handleApplyScopedParameterDrafts(portsDraftEntries, 'ports:apply', 'Ports & peripherals')}
@@ -5959,7 +6420,7 @@ export function App() {
             title="Live RC Inputs"
             subtitle="Receiver telemetry, calibrated channel bars, and an estimated flight-mode switch position from the current RC stream."
           >
-          <div className="telemetry-stack">
+          <div className="telemetry-stack telemetry-stack--receiver">
             <div className="receiver-workspace">
               <div className="receiver-workspace__live">
                 <div className="telemetry-header">
@@ -6028,6 +6489,7 @@ export function App() {
                   ))}
                 </div>
 
+                <div className="receiver-exercise-grid">
                 <div className="switch-exercise-card">
               <div className="switch-exercise-card__header">
                 <div>
@@ -6162,9 +6624,11 @@ export function App() {
                 </button>
               </div>
                 </div>
+                </div>
               </div>
 
               <div className="receiver-workspace__config">
+                <div className="receiver-config-grid">
 
                 <div className="rc-mapping-card">
               <div className="switch-exercise-card__header">
@@ -6343,7 +6807,9 @@ export function App() {
 	                </button>
 	              </div>
 	            </div>
+                </div>
 
+                <div className="receiver-support-grid">
               {modeChannelParameter || rssiTypeParameter || rssiChannelParameter || rssiChannelLowParameter || rssiChannelHighParameter ? (
                 <div className="scoped-review-card scoped-review-card--compact">
                   <div className="switch-exercise-card__header">
@@ -6603,6 +7069,7 @@ export function App() {
 	                </div>
 	              </div>
 	            ) : null}
+                </div>
 
               {renderAdditionalSettingsCard(
                 'Additional receiver settings',
@@ -7060,7 +7527,9 @@ export function App() {
           title="Airframe & Outputs"
           subtitle="Review frame geometry, output assignments, and key motor/peripheral settings before any output testing."
         >
-        <div className="telemetry-stack">
+        <div className="telemetry-stack telemetry-stack--outputs">
+          <div className="outputs-workspace">
+            <div className="outputs-workspace__main">
           <div className="telemetry-metric-grid">
             <article className="telemetry-metric-card">
               <span>Frame class</span>
@@ -7200,6 +7669,9 @@ export function App() {
             ))}
           </ul>
 
+            </div>
+            <div className="outputs-workspace__sidebar">
+
           {outputAssignmentParameters.length > 0 ? (
             <div className="scoped-review-card scoped-review-card--compact">
               <div className="switch-exercise-card__header">
@@ -7216,8 +7688,25 @@ export function App() {
                 </StatusBadge>
               </div>
 
+              <div className="scoped-review-card__disclosure">
+                <small>
+                  {showAllOutputAssignments
+                    ? `Showing all ${outputAssignmentParameters.length} SERVO function slots.`
+                    : `Showing ${visibleOutputAssignmentParameters.length} likely-relevant outputs first${hiddenOutputAssignmentCount > 0 ? `, with ${hiddenOutputAssignmentCount} additional slot${hiddenOutputAssignmentCount === 1 ? '' : 's'} hidden.` : '.'}`}
+                </small>
+                {outputAssignmentParameters.length > visibleOutputAssignmentParameters.length || showAllOutputAssignments ? (
+                  <button
+                    style={buttonStyle()}
+                    onClick={() => setShowAllOutputAssignments((current) => !current)}
+                    disabled={busyAction !== undefined}
+                  >
+                    {showAllOutputAssignments ? 'Show Focused Outputs' : `Show All ${outputAssignmentParameters.length} Outputs`}
+                  </button>
+                ) : null}
+              </div>
+
               <div className="scoped-editor-grid">
-                {outputAssignmentParameters.map((parameter) => {
+                {visibleOutputAssignmentParameters.map((parameter) => {
                   const draft = parameterDraftById.get(parameter.id)
                   const outputChannel = parseServoOutputChannelNumber(parameter.id)
                   const mappedOutput = configuredOutputs.find((output) => output.channelNumber === outputChannel)
@@ -7518,7 +8007,10 @@ export function App() {
             'Apply Additional Output Changes',
             'additional output settings'
           )}
+            </div>
+          </div>
 
+          <div className="outputs-lab-grid">
           <div className="motor-test-card">
             <div className="switch-exercise-card__header">
               <div>
@@ -7839,6 +8331,7 @@ export function App() {
               </button>
             </div>
           </div>
+          </div>
 
           {visibleDisabledOutputs.length > 0 ? (
             <p className="telemetry-note">
@@ -7849,103 +8342,6 @@ export function App() {
             </p>
           ) : null}
         </div>
-        </Panel>
-      </div>
-      ) : null}
-
-      {activeViewId === 'setup' ? (
-      <div id="setup-panel-guided">
-        <Panel
-          title="Guided Setup"
-          subtitle="Initial alpha priority: setup and calibration workflows for ArduCopter. Live operator prompts now stay attached to the action that generated them."
-        >
-        <div className="setup-grid">
-          {snapshot.setupSections.map((section) => (
-            <article key={section.id} className="setup-card">
-              <div className="setup-card-header">
-                <div>
-                  <h3>{section.title}</h3>
-                  <p>{section.description}</p>
-                </div>
-                <StatusBadge tone={toneForSetup(section.status)}>{section.status}</StatusBadge>
-              </div>
-
-              {section.notes.length > 0 ? (
-                <ul className="notes">
-                  {section.notes.map((note) => (
-                    <li key={note}>{note}</li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="success-copy">No outstanding blockers in the current mock state.</p>
-              )}
-
-              {section.parameters.length > 0 ? (
-                <div className="parameter-pills">
-                  {section.parameters.map((parameter) => (
-                    <span key={parameter.id}>
-                      {parameter.id}: {parameter.value}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-
-              {section.actions.length > 0 ? (
-                <div className="guided-actions">
-                  {section.actions.map((action) => {
-                    const actionState = snapshot.guidedActions[action]
-
-                    return (
-                      <div key={action} className="guided-action-card">
-                        <div className="guided-action-header">
-                          <strong>{actionLabels[action]}</strong>
-                          <StatusBadge tone={toneForGuidedAction(actionState.status)}>{actionState.status}</StatusBadge>
-                        </div>
-                        <p className="guided-action-summary">{actionState.summary}</p>
-
-                        {actionState.instructions.length > 0 ? (
-                          <ol className="guided-instructions">
-                            {actionState.instructions.map((instruction) => (
-                              <li key={instruction}>{instruction}</li>
-                            ))}
-                          </ol>
-                        ) : null}
-
-                        {actionState.statusTexts.length > 0 ? (
-                          <div className="guided-action-log">
-                            {actionState.statusTexts.map((text) => (
-                              <span key={text}>{text}</span>
-                            ))}
-                          </div>
-                        ) : null}
-
-                        <button
-                          style={buttonStyle(action === 'request-parameters' ? 'primary' : 'secondary')}
-                          onClick={() => void handleGuidedAction(action)}
-                          disabled={busyAction !== undefined || !canRunGuidedAction(snapshot, action)}
-                        >
-                          {guidedActionButtonLabel(action, snapshot, busyAction)}
-                        </button>
-                      </div>
-                    )
-                  })}
-                </div>
-              ) : null}
-            </article>
-          ))}
-        </div>
-
-        {renderAdditionalSettingsCard(
-          'Additional setup settings',
-          'These metadata-backed sensor and setup settings stay in the Setup view so board orientation and related configuration do not require raw Parameters.',
-          setupAdditionalGroups,
-          setupAdditionalDraftEntries,
-          setupAdditionalStagedDrafts,
-          setupAdditionalInvalidDrafts,
-          'setup:additional',
-          'Apply Additional Setup Changes',
-          'additional setup settings'
-        )}
         </Panel>
       </div>
       ) : null}

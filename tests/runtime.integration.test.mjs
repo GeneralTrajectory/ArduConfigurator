@@ -38,6 +38,25 @@ test('mock SITL connects and syncs a full parameter table', async () => {
   }
 })
 
+test('mock SITL exposes live global position telemetry for map surfaces', async () => {
+  const sitl = createMockSITL()
+
+  try {
+    const snapshot = await sitl.connectAndSync({
+      heartbeatTimeoutMs: 2000,
+      parameterTimeoutMs: 5000
+    })
+
+    assert.equal(snapshot.liveVerification.globalPosition.verified, true)
+    assert.equal(snapshot.liveVerification.globalPosition.latitudeDeg, 37.77493)
+    assert.equal(snapshot.liveVerification.globalPosition.longitudeDeg, -122.41942)
+    assert.equal(snapshot.liveVerification.globalPosition.relativeAltitudeM, 1.2)
+  } finally {
+    await sitl.disconnect().catch(() => {})
+    sitl.destroy()
+  }
+})
+
 test('verified parameter writes resolve on PARAM_VALUE readback', async () => {
   const sitl = createMockSITL()
 
@@ -370,6 +389,7 @@ test('live telemetry requests use responsive attitude rates and slower support s
     assert.deepEqual(
       telemetryRequests.map((message) => [message.params[0], message.params[1]]),
       [
+        [MAVLINK_MESSAGE_IDS.GLOBAL_POSITION_INT, 500000],
         [MAVLINK_MESSAGE_IDS.ATTITUDE, 25000],
         [MAVLINK_MESSAGE_IDS.RC_CHANNELS, 50000],
         [MAVLINK_MESSAGE_IDS.SYS_STATUS, 500000]

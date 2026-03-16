@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
@@ -49,6 +49,8 @@ const ZERO_TELEMETRY: TargetTelemetryState = {
   headingDeg: 0
 }
 
+const ATTITUDE_PITCH_MARKS = [-30, -20, -10, -5, 5, 10, 20, 30] as const
+
 function renderScene(state: ModelSceneState): void {
   state.renderer.render(state.scene, state.camera)
 }
@@ -96,7 +98,7 @@ function mountModel(
   }
 
   if (scaleMode === 'betaflight') {
-    model.scale.setScalar(compact ? 13 : 15)
+    model.scale.setScalar(compact ? 15.5 : 18)
     model.position.set(0, 0, 0)
   } else {
     const box = new THREE.Box3().setFromObject(model)
@@ -108,7 +110,7 @@ function mountModel(
     model.position.sub(center)
 
     const maxDimension = Math.max(size.x, size.y, size.z, 1)
-    const targetSize = compact ? 62 : 72
+    const targetSize = compact ? 68 : 78
     const scale = targetSize / maxDimension
     model.scale.setScalar(scale)
   }
@@ -301,6 +303,60 @@ function formatDegrees(value: number | undefined): string {
   return value === undefined ? 'Unknown' : `${value.toFixed(1)}°`
 }
 
+function formatHeadingValue(value: number): string {
+  return `${Math.round(normalizeHeading(value))}`.padStart(3, '0')
+}
+
+function formatCompassRoseLabel(value: number): string {
+  const normalized = normalizeHeading(value)
+  if (normalized === 0) {
+    return 'N'
+  }
+  if (normalized === 45) {
+    return 'NE'
+  }
+  if (normalized === 90) {
+    return 'E'
+  }
+  if (normalized === 135) {
+    return 'SE'
+  }
+  if (normalized === 180) {
+    return 'S'
+  }
+  if (normalized === 225) {
+    return 'SW'
+  }
+  if (normalized === 270) {
+    return 'W'
+  }
+  if (normalized === 315) {
+    return 'NW'
+  }
+  return `${Math.round(normalized / 10)}`.padStart(2, '0')
+}
+
+function compassRoseLabelTone(label: string): 'cardinal' | 'north' | 'intercardinal' | 'none' {
+  if (!label) {
+    return 'none'
+  }
+  if (label === 'N') {
+    return 'north'
+  }
+  if (label === 'E' || label === 'S' || label === 'W') {
+    return 'cardinal'
+  }
+  return 'intercardinal'
+}
+
+function polarPoint(centerX: number, centerY: number, radius: number, angleDegrees: number): { x: number; y: number } {
+  const radians = ((angleDegrees - 90) * Math.PI) / 180
+  return {
+    x: centerX + Math.cos(radians) * radius,
+    y: centerY + Math.sin(radians) * radius
+  }
+}
+
 export function FlightDeckPreview({
   rollDeg,
   pitchDeg,
@@ -312,6 +368,8 @@ export function FlightDeckPreview({
   compact = false,
   testId
 }: FlightDeckPreviewProps) {
+  const attitudeClipPathId = useId().replace(/:/g, '')
+  const headingClipPathId = useId().replace(/:/g, '')
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const sceneStateRef = useRef<ModelSceneState | null>(null)
@@ -351,22 +409,25 @@ export function FlightDeckPreview({
 
     const scene = new THREE.Scene()
     const camera = new THREE.PerspectiveCamera(60, 1, 1, 10000)
-    camera.position.set(0, 0, 125)
+    camera.position.set(0, 0, 112)
     camera.lookAt(0, 0, 0)
 
     const modelWrapper = new THREE.Group()
     scene.add(camera)
     scene.add(modelWrapper)
 
-    const ambient = new THREE.AmbientLight(0x404040)
-    const keyLight = new THREE.DirectionalLight(0xffffff, 1.5)
-    keyLight.position.set(0, 1, 0)
-    const fillLight = new THREE.DirectionalLight(0x6fd8ff, 0.65)
-    fillLight.position.set(-0.35, 0.4, 1)
+    const ambient = new THREE.AmbientLight(0x565656, 1.05)
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.65)
+    keyLight.position.set(0.12, 1, 0.28)
+    const fillLight = new THREE.DirectionalLight(0xa9bcc9, 0.78)
+    fillLight.position.set(-0.55, 0.38, 1)
+    const rimLight = new THREE.DirectionalLight(0x5f7486, 0.42)
+    rimLight.position.set(0, -0.3, -1)
 
     scene.add(ambient)
     scene.add(keyLight)
     scene.add(fillLight)
+    scene.add(rimLight)
 
     sceneStateRef.current = { renderer, scene, camera, modelWrapper }
     loaderRef.current = new GLTFLoader()
@@ -415,7 +476,7 @@ export function FlightDeckPreview({
 
       state.modelWrapper.rotation.y = current.yawRad
       if (state.model) {
-        state.model.rotation.x = -current.pitchRad
+        state.model.rotation.x = current.pitchRad
         state.model.rotation.z = -current.rollRad
       }
 
@@ -509,17 +570,47 @@ export function FlightDeckPreview({
   }, [pitchDeg, rollDeg, yawDeg])
 
   const heading = normalizeHeading(displayTelemetry.headingDeg)
+  const compassRoseMarks = useMemo(
+    () =>
+      Array.from({ length: 24 }, (_, index) => {
+        const value = index * 15
+        const outer = polarPoint(120, 104, 70, value)
+        const labeled = value % 45 === 0
+        const inner = polarPoint(120, 104, labeled ? 52 : value % 30 === 0 ? 57 : 61, value)
+        const labelPoint = polarPoint(120, 104, 42, value)
+        const label = labeled ? formatCompassRoseLabel(value) : ''
+        return {
+          value,
+          major: labeled || value % 30 === 0,
+          label,
+          tone: compassRoseLabelTone(label),
+          inner,
+          outer,
+          labelPoint
+        }
+      }),
+    []
+  )
+  const digitalHeading = formatHeadingValue(heading)
 
   return (
     <div className={`flight-deck${compact ? ' flight-deck--compact' : ''}`} data-testid={testId}>
       <div className="flight-deck__model-shell">
-        <div className="flight-deck__model-frame" ref={viewportRef}>
+        <div className={`flight-deck__model-frame${!verified ? ' is-standby' : ''}`} ref={viewportRef}>
           <canvas ref={canvasRef} className="flight-deck__canvas" />
-          <div className="flight-deck__hud">
-            <span>ROLL {formatDegrees(rollDeg)}</span>
-            <span>PITCH {formatDegrees(pitchDeg)}</span>
-            <span>YAW {formatDegrees(yawDeg)}</span>
-          </div>
+          {!verified ? (
+            <div className="flight-deck__standby">
+              <strong>Preview staged</strong>
+              <span>Attitude stream offline</span>
+            </div>
+          ) : null}
+          {verified ? (
+            <div className="flight-deck__hud">
+              <span>ROLL {formatDegrees(rollDeg)}</span>
+              <span>PITCH {formatDegrees(pitchDeg)}</span>
+              <span>YAW {formatDegrees(yawDeg)}</span>
+            </div>
+          ) : null}
         </div>
         <div className="flight-deck__caption">
           <span>{verified ? 'Live craft preview' : 'Preview waiting on attitude telemetry'}</span>
@@ -528,23 +619,61 @@ export function FlightDeckPreview({
       </div>
 
       <div className="flight-deck__instruments">
-        <div className="flight-instrument">
-          <div className="flight-instrument__title">Attitude</div>
-          <div className="flight-instrument__dial">
-            <div className="flight-instrument__horizon">
-              <div
-                className={`flight-instrument__world${verified ? ' is-live' : ''}`}
-                style={{ transform: `translateY(${displayTelemetry.pitchVisual * 1.7}px) rotate(${displayTelemetry.rollVisual}deg)` }}
-              >
-                <div className="flight-instrument__sky" />
-                <div className="flight-instrument__ground" />
-                <div className="flight-instrument__line" />
-              </div>
-              <div className="flight-instrument__reticle">
-                <span />
-                <span />
-                <span />
-              </div>
+        <div className="flight-instrument flight-instrument--attitude">
+          <div className="flight-instrument__header-row">
+            <div className="flight-instrument__title">Attitude</div>
+            <span className={`flight-instrument__status${verified ? ' is-live' : ''}`}>{verified ? 'Live' : 'Standby'}</span>
+          </div>
+          <div className="flight-instrument__frame flight-instrument__frame--attitude">
+            <svg className="flight-instrument__svg" viewBox="0 0 240 200" aria-hidden="true">
+              <defs>
+                <clipPath id={attitudeClipPathId}>
+                  <rect x="26" y="38" width="188" height="124" rx="18" ry="18" />
+                </clipPath>
+              </defs>
+
+              <rect className="flight-instrument__bezel" x="12" y="20" width="216" height="156" rx="24" ry="24" />
+              <rect className="flight-instrument__screen" x="26" y="38" width="188" height="124" rx="18" ry="18" />
+
+              <g clipPath={`url(#${attitudeClipPathId})`}>
+                <g transform={`translate(120 100) rotate(${displayTelemetry.rollVisual}) translate(0 ${displayTelemetry.pitchVisual * 2.35})`}>
+                  <rect className="flight-instrument__horizon-sky" x="-190" y="-200" width="380" height="200" />
+                  <rect className="flight-instrument__horizon-ground" x="-190" y="0" width="380" height="200" />
+                  <line className="flight-instrument__horizon-line" x1="-210" y1="0" x2="210" y2="0" />
+
+                  {ATTITUDE_PITCH_MARKS.map((mark) => {
+                    const y = -mark * 2.65
+                    const longMark = Math.abs(mark) % 10 === 0
+                    const halfWidth = longMark ? 34 : 18
+                    return (
+                      <g key={mark} className="flight-instrument__pitch-mark" transform={`translate(0 ${y})`}>
+                        <line x1={-halfWidth} y1="0" x2={halfWidth} y2="0" />
+                        <text x={-halfWidth - 10} y="4" textAnchor="end">
+                          {Math.abs(mark)}
+                        </text>
+                        <text x={halfWidth + 10} y="4" textAnchor="start">
+                          {Math.abs(mark)}
+                        </text>
+                      </g>
+                    )
+                  })}
+                </g>
+              </g>
+
+              <path className="flight-instrument__reticle-wing" d="M 52 104 H 94 L 104 112 H 116" />
+              <path className="flight-instrument__reticle-wing" d="M 188 104 H 146 L 136 112 H 124" />
+              <rect className="flight-instrument__reticle-box" x="110" y="106" width="20" height="8" rx="2" ry="2" />
+              <line className="flight-instrument__reticle-centerline" x1="120" y1="100" x2="120" y2="118" />
+            </svg>
+          </div>
+          <div className="flight-instrument__readout-strip">
+            <div className="flight-instrument__readout">
+              <span>Roll</span>
+              <strong>{formatDegrees(rollDeg)}</strong>
+            </div>
+            <div className="flight-instrument__readout">
+              <span>Pitch</span>
+              <strong>{formatDegrees(pitchDeg)}</strong>
             </div>
           </div>
           <div className="flight-deck__caption">
@@ -553,19 +682,70 @@ export function FlightDeckPreview({
           </div>
         </div>
 
-        <div className="flight-instrument">
-          <div className="flight-instrument__title">Heading</div>
-          <div className="flight-instrument__dial flight-instrument__dial--heading">
-            <div
-              className="flight-instrument__heading-ring"
-              style={{ transform: `rotate(${-displayTelemetry.headingDeg}deg)` }}
-            >
-              <span className="flight-instrument__cardinal flight-instrument__cardinal--north">N</span>
-              <span className="flight-instrument__cardinal flight-instrument__cardinal--east">E</span>
-              <span className="flight-instrument__cardinal flight-instrument__cardinal--south">S</span>
-              <span className="flight-instrument__cardinal flight-instrument__cardinal--west">W</span>
+        <div className="flight-instrument flight-instrument--heading">
+          <div className="flight-instrument__header-row">
+            <div className="flight-instrument__title">Heading</div>
+            <span className={`flight-instrument__status${verified ? ' is-live' : ''}`}>{verified ? 'Live' : 'Standby'}</span>
+          </div>
+          <div className="flight-instrument__frame flight-instrument__frame--heading">
+            <svg className="flight-instrument__svg" viewBox="0 0 240 196" aria-hidden="true">
+              <defs>
+                <clipPath id={headingClipPathId}>
+                  <circle cx="120" cy="104" r="72" />
+                </clipPath>
+              </defs>
+
+              <rect className="flight-instrument__bezel" x="28" y="28" width="184" height="152" rx="34" ry="34" />
+              <circle className="flight-instrument__compass-screen" cx="120" cy="104" r="72" />
+              <circle className="flight-instrument__compass-ring" cx="120" cy="104" r="62" />
+
+              <g clipPath={`url(#${headingClipPathId})`}>
+                <g transform={`rotate(${-displayTelemetry.headingDeg} 120 104)`}>
+                  {compassRoseMarks.map((mark) => (
+                    <g key={mark.value}>
+                      <line
+                        className={`flight-instrument__compass-tick${mark.major ? ' is-major' : ''}`}
+                        x1={mark.inner.x}
+                        y1={mark.inner.y}
+                        x2={mark.outer.x}
+                        y2={mark.outer.y}
+                      />
+                      {mark.label ? (
+                        <text
+                          className={`flight-instrument__compass-label${mark.tone !== 'none' ? ` is-${mark.tone}` : ''}`}
+                          x={mark.labelPoint.x}
+                          y={mark.labelPoint.y}
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          transform={`rotate(${displayTelemetry.headingDeg} ${mark.labelPoint.x} ${mark.labelPoint.y})`}
+                        >
+                          {mark.label}
+                        </text>
+                      ) : null}
+                    </g>
+                  ))}
+                </g>
+              </g>
+
+              <line className="flight-instrument__compass-course-line" x1="120" y1="42" x2="120" y2="140" />
+              <path className="flight-instrument__heading-pointer" d="M 120 34 L 128 48 H 112 Z" />
+              <circle className="flight-instrument__compass-center" cx="120" cy="104" r="5" />
+              <path className="flight-instrument__compass-center-marker" d="M 96 104 H 112 L 120 112 L 128 104 H 144" />
+              <rect className="flight-instrument__heading-window" x="90" y="8" width="60" height="24" rx="6" ry="6" />
+              <text className="flight-instrument__heading-window-text" x="120" y="24" textAnchor="middle">
+                {digitalHeading}
+              </text>
+            </svg>
+          </div>
+          <div className="flight-instrument__readout-strip">
+            <div className="flight-instrument__readout">
+              <span>Heading</span>
+              <strong>{Math.round(heading)}°</strong>
             </div>
-            <div className="flight-instrument__needle" />
+            <div className="flight-instrument__readout">
+              <span>Status</span>
+              <strong>{verified ? 'Synced' : 'Waiting'}</strong>
+            </div>
           </div>
           <div className="flight-deck__caption">
             <span>Current yaw heading</span>

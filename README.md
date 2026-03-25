@@ -9,6 +9,10 @@ The project is aiming at the same category as `app.betaflight.com`, but for Ardu
 - safe configuration workflows
 - narrow, curated tuning instead of a raw-parameter-first experience
 
+## UI Preview
+
+![ArduConfigurator setup UI](docs/images/configurator-setup-ui.png)
+
 ## How This Differs
 
 ArduPilot already has adjacent configurator efforts, including:

@@ -195,6 +195,16 @@ const acroRateNotes = [
   'This first tuning surface intentionally stops at rates and expo so the setup workflow stays approachable.'
 ]
 
+const pidTuningNotes = [
+  'Rate P, I, D, and feedforward changes should be made in small increments with a fresh snapshot saved first.',
+  'Keep roll and pitch gains close unless you have a specific asymmetry that requires a deliberate split.'
+]
+
+const filterTuningNotes = [
+  'Lower filter values increase smoothing and latency; higher values preserve response but can let more noise through.',
+  'Treat zero values carefully because some ArduPilot filter parameters use zero to disable that specific filter path.'
+]
+
 const presetPrerequisites = [
   'Finish receiver, output, failsafe, and power setup before applying a tuning preset.',
   'Apply one preset family at a time and do a short test flight before stacking more changes.'
@@ -455,6 +465,20 @@ export const arducopterMetadata: FirmwareMetadataBundle = {
       label: 'Acro Rates',
       description: 'Acro roll, pitch, and yaw rates plus expo.',
       order: 13,
+      viewId: 'tuning'
+    },
+    pid: {
+      id: 'pid',
+      label: 'PID Gains',
+      description: 'Rate-controller P, I, D, and feedforward gains.',
+      order: 14,
+      viewId: 'tuning'
+    },
+    filters: {
+      id: 'filters',
+      label: 'Filters',
+      description: 'Rate-controller filter and bandwidth settings.',
+      order: 15,
       viewId: 'tuning'
     }
   },
@@ -1364,6 +1388,378 @@ export const arducopterMetadata: FirmwareMetadataBundle = {
       maximum: 1,
       step: 0.01,
       notes: acroRateNotes
+    },
+    ATC_ACCEL_R_MAX: {
+      id: 'ATC_ACCEL_R_MAX',
+      label: 'Roll Accel Limit',
+      description: 'Maximum roll angular acceleration target used by the controller response shaper.',
+      category: 'tuning',
+      unit: 'deg/s²',
+      minimum: 1000,
+      maximum: 220000,
+      step: 100,
+      notes: acroRateNotes
+    },
+    ATC_ACCEL_P_MAX: {
+      id: 'ATC_ACCEL_P_MAX',
+      label: 'Pitch Accel Limit',
+      description: 'Maximum pitch angular acceleration target used by the controller response shaper.',
+      category: 'tuning',
+      unit: 'deg/s²',
+      minimum: 1000,
+      maximum: 220000,
+      step: 100,
+      notes: acroRateNotes
+    },
+    ATC_ACCEL_Y_MAX: {
+      id: 'ATC_ACCEL_Y_MAX',
+      label: 'Yaw Accel Limit',
+      description: 'Maximum yaw angular acceleration target used by the controller response shaper.',
+      category: 'tuning',
+      unit: 'deg/s²',
+      minimum: 1000,
+      maximum: 220000,
+      step: 100,
+      notes: acroRateNotes
+    },
+    ATC_RAT_RLL_P: {
+      id: 'ATC_RAT_RLL_P',
+      label: 'Roll P Gain',
+      description: 'Roll-axis rate P gain.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 1.5,
+      step: 0.001,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_RLL_I: {
+      id: 'ATC_RAT_RLL_I',
+      label: 'Roll I Gain',
+      description: 'Roll-axis rate I gain.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 1.5,
+      step: 0.001,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_RLL_D: {
+      id: 'ATC_RAT_RLL_D',
+      label: 'Roll D Gain',
+      description: 'Roll-axis rate D gain.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 0.1,
+      step: 0.0001,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_RLL_FF: {
+      id: 'ATC_RAT_RLL_FF',
+      label: 'Roll Feedforward',
+      description: 'Roll-axis rate feedforward gain.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 1,
+      step: 0.001,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_RLL_D_FF: {
+      id: 'ATC_RAT_RLL_D_FF',
+      label: 'Roll D Feedforward',
+      description: 'Roll-axis derivative feedforward term.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 0.1,
+      step: 0.0001,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_RLL_IMAX: {
+      id: 'ATC_RAT_RLL_IMAX',
+      label: 'Roll I Max',
+      description: 'Roll-axis integrator clamp.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 1,
+      step: 0.01,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_RLL_PDMX: {
+      id: 'ATC_RAT_RLL_PDMX',
+      label: 'Roll PD Max',
+      description: 'Roll-axis combined P and D output ceiling.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 1,
+      step: 0.01,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_RLL_SMAX: {
+      id: 'ATC_RAT_RLL_SMAX',
+      label: 'Roll Slew Limit',
+      description: 'Roll-axis slew-rate limit for the rate controller.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 200,
+      step: 1,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_PIT_P: {
+      id: 'ATC_RAT_PIT_P',
+      label: 'Pitch P Gain',
+      description: 'Pitch-axis rate P gain.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 1.5,
+      step: 0.001,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_PIT_I: {
+      id: 'ATC_RAT_PIT_I',
+      label: 'Pitch I Gain',
+      description: 'Pitch-axis rate I gain.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 1.5,
+      step: 0.001,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_PIT_D: {
+      id: 'ATC_RAT_PIT_D',
+      label: 'Pitch D Gain',
+      description: 'Pitch-axis rate D gain.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 0.1,
+      step: 0.0001,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_PIT_FF: {
+      id: 'ATC_RAT_PIT_FF',
+      label: 'Pitch Feedforward',
+      description: 'Pitch-axis rate feedforward gain.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 1,
+      step: 0.001,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_PIT_D_FF: {
+      id: 'ATC_RAT_PIT_D_FF',
+      label: 'Pitch D Feedforward',
+      description: 'Pitch-axis derivative feedforward term.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 0.1,
+      step: 0.0001,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_PIT_IMAX: {
+      id: 'ATC_RAT_PIT_IMAX',
+      label: 'Pitch I Max',
+      description: 'Pitch-axis integrator clamp.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 1,
+      step: 0.01,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_PIT_PDMX: {
+      id: 'ATC_RAT_PIT_PDMX',
+      label: 'Pitch PD Max',
+      description: 'Pitch-axis combined P and D output ceiling.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 1,
+      step: 0.01,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_PIT_SMAX: {
+      id: 'ATC_RAT_PIT_SMAX',
+      label: 'Pitch Slew Limit',
+      description: 'Pitch-axis slew-rate limit for the rate controller.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 200,
+      step: 1,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_YAW_P: {
+      id: 'ATC_RAT_YAW_P',
+      label: 'Yaw P Gain',
+      description: 'Yaw-axis rate P gain.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 1.5,
+      step: 0.001,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_YAW_I: {
+      id: 'ATC_RAT_YAW_I',
+      label: 'Yaw I Gain',
+      description: 'Yaw-axis rate I gain.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 1.5,
+      step: 0.001,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_YAW_D: {
+      id: 'ATC_RAT_YAW_D',
+      label: 'Yaw D Gain',
+      description: 'Yaw-axis rate D gain.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 0.1,
+      step: 0.0001,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_YAW_FF: {
+      id: 'ATC_RAT_YAW_FF',
+      label: 'Yaw Feedforward',
+      description: 'Yaw-axis rate feedforward gain.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 1,
+      step: 0.001,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_YAW_D_FF: {
+      id: 'ATC_RAT_YAW_D_FF',
+      label: 'Yaw D Feedforward',
+      description: 'Yaw-axis derivative feedforward term.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 0.1,
+      step: 0.0001,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_YAW_IMAX: {
+      id: 'ATC_RAT_YAW_IMAX',
+      label: 'Yaw I Max',
+      description: 'Yaw-axis integrator clamp.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 1,
+      step: 0.01,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_YAW_PDMX: {
+      id: 'ATC_RAT_YAW_PDMX',
+      label: 'Yaw PD Max',
+      description: 'Yaw-axis combined P and D output ceiling.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 1,
+      step: 0.01,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_YAW_SMAX: {
+      id: 'ATC_RAT_YAW_SMAX',
+      label: 'Yaw Slew Limit',
+      description: 'Yaw-axis slew-rate limit for the rate controller.',
+      category: 'pid',
+      minimum: 0,
+      maximum: 200,
+      step: 1,
+      notes: pidTuningNotes
+    },
+    ATC_RAT_RLL_FLTT: {
+      id: 'ATC_RAT_RLL_FLTT',
+      label: 'Roll Target Filter',
+      description: 'Roll-axis target filter frequency.',
+      category: 'filters',
+      unit: 'Hz',
+      minimum: 0,
+      maximum: 200,
+      step: 1,
+      notes: filterTuningNotes
+    },
+    ATC_RAT_RLL_FLTE: {
+      id: 'ATC_RAT_RLL_FLTE',
+      label: 'Roll Error Filter',
+      description: 'Roll-axis error filter frequency.',
+      category: 'filters',
+      unit: 'Hz',
+      minimum: 0,
+      maximum: 200,
+      step: 1,
+      notes: filterTuningNotes
+    },
+    ATC_RAT_RLL_FLTD: {
+      id: 'ATC_RAT_RLL_FLTD',
+      label: 'Roll D Filter',
+      description: 'Roll-axis D-term filter frequency.',
+      category: 'filters',
+      unit: 'Hz',
+      minimum: 0,
+      maximum: 200,
+      step: 1,
+      notes: filterTuningNotes
+    },
+    ATC_RAT_PIT_FLTT: {
+      id: 'ATC_RAT_PIT_FLTT',
+      label: 'Pitch Target Filter',
+      description: 'Pitch-axis target filter frequency.',
+      category: 'filters',
+      unit: 'Hz',
+      minimum: 0,
+      maximum: 200,
+      step: 1,
+      notes: filterTuningNotes
+    },
+    ATC_RAT_PIT_FLTE: {
+      id: 'ATC_RAT_PIT_FLTE',
+      label: 'Pitch Error Filter',
+      description: 'Pitch-axis error filter frequency.',
+      category: 'filters',
+      unit: 'Hz',
+      minimum: 0,
+      maximum: 200,
+      step: 1,
+      notes: filterTuningNotes
+    },
+    ATC_RAT_PIT_FLTD: {
+      id: 'ATC_RAT_PIT_FLTD',
+      label: 'Pitch D Filter',
+      description: 'Pitch-axis D-term filter frequency.',
+      category: 'filters',
+      unit: 'Hz',
+      minimum: 0,
+      maximum: 200,
+      step: 1,
+      notes: filterTuningNotes
+    },
+    ATC_RAT_YAW_FLTT: {
+      id: 'ATC_RAT_YAW_FLTT',
+      label: 'Yaw Target Filter',
+      description: 'Yaw-axis target filter frequency.',
+      category: 'filters',
+      unit: 'Hz',
+      minimum: 0,
+      maximum: 200,
+      step: 1,
+      notes: filterTuningNotes
+    },
+    ATC_RAT_YAW_FLTE: {
+      id: 'ATC_RAT_YAW_FLTE',
+      label: 'Yaw Error Filter',
+      description: 'Yaw-axis error filter frequency.',
+      category: 'filters',
+      unit: 'Hz',
+      minimum: 0,
+      maximum: 200,
+      step: 1,
+      notes: filterTuningNotes
+    },
+    ATC_RAT_YAW_FLTD: {
+      id: 'ATC_RAT_YAW_FLTD',
+      label: 'Yaw D Filter',
+      description: 'Yaw-axis D-term filter frequency.',
+      category: 'filters',
+      unit: 'Hz',
+      minimum: 0,
+      maximum: 200,
+      step: 1,
+      notes: filterTuningNotes
     },
     MOT_PWM_TYPE: {
       id: 'MOT_PWM_TYPE',

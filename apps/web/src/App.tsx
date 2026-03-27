@@ -1,4 +1,4 @@
-import type { ChangeEvent, Dispatch, SetStateAction } from 'react'
+import type { ChangeEvent } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
@@ -139,6 +139,13 @@ import {
   type SavedParameterSnapshot,
   type SnapshotStorageLoadResult
 } from './snapshot-library'
+import {
+  loadStoredTuningProfiles,
+  persistTuningProfiles,
+  sortTuningProfiles,
+  type SavedTuningProfile,
+  type TuningProfileStorageLoadResult
+} from './tuning-profile-library'
 
 const actionLabels = {
   'request-parameters': 'Pull Parameters',
@@ -198,8 +205,114 @@ const POWER_REVIEW_PARAM_IDS = [
 ] as const
 const RECEIVER_SUPPORT_PARAM_IDS = ['FLTMODE_CH', 'MODE_CH', 'RSSI_TYPE', 'RSSI_CHANNEL', 'RSSI_CHAN_LOW', 'RSSI_CHAN_HIGH'] as const
 const TUNING_FLIGHT_FEEL_PARAM_IDS = ['ATC_INPUT_TC', 'ANGLE_MAX', 'PILOT_Y_RATE', 'PILOT_Y_EXPO'] as const
+const TUNING_ACCEL_LIMIT_PARAM_IDS = ['ATC_ACCEL_R_MAX', 'ATC_ACCEL_P_MAX', 'ATC_ACCEL_Y_MAX'] as const
 const TUNING_ACRO_PARAM_IDS = ['ACRO_RP_RATE', 'ACRO_Y_RATE', 'ACRO_RP_EXPO', 'ACRO_Y_EXPO'] as const
-const TUNING_PARAM_IDS = [...TUNING_FLIGHT_FEEL_PARAM_IDS, ...TUNING_ACRO_PARAM_IDS] as const
+const TUNING_PID_GAIN_PARAM_IDS = [
+  'ATC_RAT_RLL_P',
+  'ATC_RAT_RLL_I',
+  'ATC_RAT_RLL_D',
+  'ATC_RAT_RLL_FF',
+  'ATC_RAT_PIT_P',
+  'ATC_RAT_PIT_I',
+  'ATC_RAT_PIT_D',
+  'ATC_RAT_PIT_FF',
+  'ATC_RAT_YAW_P',
+  'ATC_RAT_YAW_I',
+  'ATC_RAT_YAW_D',
+  'ATC_RAT_YAW_FF'
+] as const
+const TUNING_ADVANCED_PID_PARAM_IDS = [
+  'ATC_RAT_RLL_D_FF',
+  'ATC_RAT_RLL_IMAX',
+  'ATC_RAT_RLL_PDMX',
+  'ATC_RAT_RLL_SMAX',
+  'ATC_RAT_PIT_D_FF',
+  'ATC_RAT_PIT_IMAX',
+  'ATC_RAT_PIT_PDMX',
+  'ATC_RAT_PIT_SMAX',
+  'ATC_RAT_YAW_D_FF',
+  'ATC_RAT_YAW_IMAX',
+  'ATC_RAT_YAW_PDMX',
+  'ATC_RAT_YAW_SMAX'
+] as const
+const TUNING_ALL_PID_PARAM_IDS = [...TUNING_PID_GAIN_PARAM_IDS, ...TUNING_ADVANCED_PID_PARAM_IDS] as const
+const TUNING_FILTER_PARAM_IDS = [
+  'ATC_RAT_RLL_FLTT',
+  'ATC_RAT_RLL_FLTE',
+  'ATC_RAT_RLL_FLTD',
+  'ATC_RAT_PIT_FLTT',
+  'ATC_RAT_PIT_FLTE',
+  'ATC_RAT_PIT_FLTD',
+  'ATC_RAT_YAW_FLTT',
+  'ATC_RAT_YAW_FLTE',
+  'ATC_RAT_YAW_FLTD'
+] as const
+const TUNING_RATE_PARAM_IDS = [...TUNING_FLIGHT_FEEL_PARAM_IDS, ...TUNING_ACCEL_LIMIT_PARAM_IDS, ...TUNING_ACRO_PARAM_IDS] as const
+const TUNING_PARAM_IDS = [...TUNING_RATE_PARAM_IDS, ...TUNING_ALL_PID_PARAM_IDS, ...TUNING_FILTER_PARAM_IDS] as const
+const TUNING_PID_AXIS_GROUPS = [
+  {
+    id: 'roll',
+    label: 'Roll',
+    paramIds: ['ATC_RAT_RLL_P', 'ATC_RAT_RLL_I', 'ATC_RAT_RLL_D', 'ATC_RAT_RLL_FF'] as const
+  },
+  {
+    id: 'pitch',
+    label: 'Pitch',
+    paramIds: ['ATC_RAT_PIT_P', 'ATC_RAT_PIT_I', 'ATC_RAT_PIT_D', 'ATC_RAT_PIT_FF'] as const
+  },
+  {
+    id: 'yaw',
+    label: 'Yaw',
+    paramIds: ['ATC_RAT_YAW_P', 'ATC_RAT_YAW_I', 'ATC_RAT_YAW_D', 'ATC_RAT_YAW_FF'] as const
+  }
+] as const
+const TUNING_FILTER_AXIS_GROUPS = [
+  {
+    id: 'roll',
+    label: 'Roll',
+    paramIds: ['ATC_RAT_RLL_FLTT', 'ATC_RAT_RLL_FLTE', 'ATC_RAT_RLL_FLTD'] as const
+  },
+  {
+    id: 'pitch',
+    label: 'Pitch',
+    paramIds: ['ATC_RAT_PIT_FLTT', 'ATC_RAT_PIT_FLTE', 'ATC_RAT_PIT_FLTD'] as const
+  },
+  {
+    id: 'yaw',
+    label: 'Yaw',
+    paramIds: ['ATC_RAT_YAW_FLTT', 'ATC_RAT_YAW_FLTE', 'ATC_RAT_YAW_FLTD'] as const
+  }
+] as const
+const TUNING_ADVANCED_PID_AXIS_GROUPS = [
+  {
+    id: 'roll',
+    label: 'Roll',
+    paramIds: ['ATC_RAT_RLL_D_FF', 'ATC_RAT_RLL_IMAX', 'ATC_RAT_RLL_PDMX', 'ATC_RAT_RLL_SMAX'] as const
+  },
+  {
+    id: 'pitch',
+    label: 'Pitch',
+    paramIds: ['ATC_RAT_PIT_D_FF', 'ATC_RAT_PIT_IMAX', 'ATC_RAT_PIT_PDMX', 'ATC_RAT_PIT_SMAX'] as const
+  },
+  {
+    id: 'yaw',
+    label: 'Yaw',
+    paramIds: ['ATC_RAT_YAW_D_FF', 'ATC_RAT_YAW_IMAX', 'ATC_RAT_YAW_PDMX', 'ATC_RAT_YAW_SMAX'] as const
+  }
+] as const
+const TUNING_ROLL_PITCH_LINK_MAP = {
+  ATC_RAT_RLL_P: 'ATC_RAT_PIT_P',
+  ATC_RAT_RLL_I: 'ATC_RAT_PIT_I',
+  ATC_RAT_RLL_D: 'ATC_RAT_PIT_D',
+  ATC_RAT_RLL_FF: 'ATC_RAT_PIT_FF',
+  ATC_RAT_RLL_D_FF: 'ATC_RAT_PIT_D_FF',
+  ATC_RAT_RLL_IMAX: 'ATC_RAT_PIT_IMAX',
+  ATC_RAT_RLL_PDMX: 'ATC_RAT_PIT_PDMX',
+  ATC_RAT_RLL_SMAX: 'ATC_RAT_PIT_SMAX',
+  ATC_RAT_RLL_FLTT: 'ATC_RAT_PIT_FLTT',
+  ATC_RAT_RLL_FLTE: 'ATC_RAT_PIT_FLTE',
+  ATC_RAT_RLL_FLTD: 'ATC_RAT_PIT_FLTD'
+} as const
 const PRESET_AUTO_BACKUP_TAGS = ['auto-backup', 'preset'] as const
 const DEFAULT_PROVISIONING_CHECKLIST_LINES = [
   'Motor order verified on the bench.',
@@ -219,6 +332,8 @@ type StatusTone = 'neutral' | 'success' | 'warning' | 'danger'
 type ModeSwitchExerciseStatus = 'idle' | 'running' | 'passed' | 'failed'
 type ReceiverTaskId = 'mapping' | 'endpoints' | 'flight-modes' | 'advanced' | 'review'
 type OutputTaskId = 'motor-setup' | 'direction-test' | 'esc-protocol' | 'peripherals' | 'review'
+type TuningTaskId = 'rates' | 'pid-gains' | 'filters' | 'profiles' | 'review'
+type TuningProfileSourceMode = 'live' | 'staged'
 type ProvisioningProfileSourceMode = 'selected-snapshot' | 'live-controller'
 
 const PRODUCT_MODE_STORAGE_KEY = 'arduconfig:product-mode'
@@ -2211,12 +2326,34 @@ function formatRemaining(value: number | undefined): string {
   return value === undefined ? 'Unknown' : `${value}%`
 }
 
+function formatNumericDisplayValue(value: number): string {
+  if (!Number.isFinite(value)) {
+    return 'Unknown'
+  }
+
+  if (Number.isInteger(value)) {
+    return String(value)
+  }
+
+  const absoluteValue = Math.abs(value)
+  const decimals =
+    absoluteValue >= 100 ? 1 :
+    absoluteValue >= 10 ? 2 :
+    absoluteValue >= 1 ? 3 :
+    absoluteValue >= 0.1 ? 4 :
+    6
+
+  const normalized = value.toFixed(decimals).replace(/\.?0+$/, '')
+  return normalized === '-0' ? '0' : normalized
+}
+
 function formatParameterValue(value: number | undefined, unit: string | undefined = undefined): string {
   if (value === undefined) {
     return 'Unknown'
   }
 
-  return unit ? `${value} ${unit}` : String(value)
+  const formattedValue = formatNumericDisplayValue(value)
+  return unit ? `${formattedValue} ${unit}` : formattedValue
 }
 
 function findParameterOption(definition: ParameterDefinition | undefined, value: number | undefined): ParameterValueOption | undefined {
@@ -2349,23 +2486,99 @@ function tuningInputValue(parameter: ParameterState, editedValues: Record<string
   return rawValue ?? String(parameter.value)
 }
 
-function stageTuningInputValue(
+function applyTuningEditedValue(
+  existing: Record<string, string>,
   parameter: ParameterState,
-  nextValue: string,
-  setEditedValues: Dispatch<SetStateAction<Record<string, string>>>
-): void {
+  nextValue: string
+): Record<string, string> {
   if (parameter.id === 'ANGLE_MAX') {
-    setEditedValues((existing) => ({
+    return {
       ...existing,
       [parameter.id]: nextValue.trim().length === 0 ? '' : String(Math.round(Number(nextValue) * 100))
-    }))
-    return
+    }
   }
 
-  setEditedValues((existing) => ({
+  return {
     ...existing,
     [parameter.id]: nextValue
-  }))
+  }
+}
+
+function tuningNumericValue(parameter: ParameterState, editedValues: Record<string, string>): number {
+  const normalizedInputValue = tuningInputValue(parameter, editedValues)
+  const parsed = Number(normalizedInputValue)
+
+  if (Number.isFinite(parsed)) {
+    return parsed
+  }
+
+  return parameter.id === 'ANGLE_MAX' ? Math.round(parameter.value / 100) : parameter.value
+}
+
+function tuningControlBounds(parameter: ParameterState): { min?: number; max?: number; step?: number } {
+  if (parameter.id === 'ANGLE_MAX') {
+    return {
+      min: 10,
+      max: 80,
+      step: 1
+    }
+  }
+
+  return {
+    min: parameter.definition?.minimum,
+    max: parameter.definition?.maximum,
+    step: parameter.definition?.step ?? 0.01
+  }
+}
+
+function formatTuningDisplayValue(parameter: ParameterState, value: number | undefined): string {
+  if (parameter.id === 'ANGLE_MAX') {
+    return formatAngleMaxDegrees(value)
+  }
+
+  return formatParameterDisplayValue(parameter, value)
+}
+
+function clampNumericValue(value: number, minimum?: number, maximum?: number): number {
+  let nextValue = value
+  if (minimum !== undefined) {
+    nextValue = Math.max(minimum, nextValue)
+  }
+  if (maximum !== undefined) {
+    nextValue = Math.min(maximum, nextValue)
+  }
+  return nextValue
+}
+
+function normalizeTuningNumericValue(parameter: ParameterState, value: number): number {
+  const { min, max, step } = tuningControlBounds(parameter)
+  const clamped = clampNumericValue(value, min, max)
+
+  if (step === undefined || step <= 0) {
+    return clamped
+  }
+
+  const rounded = Math.round(clamped / step) * step
+  const precision = Math.max(0, Math.ceil(Math.log10(1 / step)))
+  return Number(rounded.toFixed(Math.min(precision, 6)))
+}
+
+function createTuningProfileId(): string {
+  return `tuning-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function sortTuningBackupEntries(entries: readonly ParameterBackupEntry[]): ParameterBackupEntry[] {
+  return [...entries].sort((left, right) => left.id.localeCompare(right.id))
+}
+
+function linkedTuningCounterpartId(paramId: string): string | undefined {
+  const directMatch = TUNING_ROLL_PITCH_LINK_MAP[paramId as keyof typeof TUNING_ROLL_PITCH_LINK_MAP]
+  if (directMatch) {
+    return directMatch
+  }
+
+  const reverseMatch = Object.entries(TUNING_ROLL_PITCH_LINK_MAP).find(([, value]) => value === paramId)
+  return reverseMatch?.[0]
 }
 
 function buildParameterBackupFilename(snapshot: ConfiguratorSnapshot): string {
@@ -2559,11 +2772,14 @@ export function App() {
   )
   const initialSnapshotStorage = useMemo<SnapshotStorageLoadResult>(() => loadStoredSnapshots(), [])
   const initialProvisioningStorage = useMemo<ProvisioningStorageLoadResult>(() => loadStoredProvisioningProfiles(), [])
+  const initialTuningProfileStorage = useMemo<TuningProfileStorageLoadResult>(() => loadStoredTuningProfiles(), [])
   const [snapshot, setSnapshot] = useState<ConfiguratorSnapshot>(runtime.getSnapshot())
   const [savedSnapshots, setSavedSnapshots] = useState<SavedParameterSnapshot[]>(initialSnapshotStorage.snapshots)
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<string>()
   const [savedProvisioningProfiles, setSavedProvisioningProfiles] = useState<SavedProvisioningProfile[]>(initialProvisioningStorage.profiles)
   const [selectedProvisioningProfileId, setSelectedProvisioningProfileId] = useState<string>()
+  const [savedTuningProfiles, setSavedTuningProfiles] = useState<SavedTuningProfile[]>(initialTuningProfileStorage.profiles)
+  const [selectedTuningProfileId, setSelectedTuningProfileId] = useState<string>()
   const [selectedPresetId, setSelectedPresetId] = useState<string>()
   const [desktopSnapshotLibraryPath, setDesktopSnapshotLibraryPath] = useState<string>()
   const [desktopSnapshotLibraryName, setDesktopSnapshotLibraryName] = useState<string>()
@@ -2584,6 +2800,10 @@ export function App() {
   const [provisioningProfileSourceInput, setProvisioningProfileSourceInput] =
     useState<ProvisioningProfileSourceMode>('selected-snapshot')
   const [includeDraftOverlayInProvisioningProfile, setIncludeDraftOverlayInProvisioningProfile] = useState(false)
+  const [tuningProfileLabelInput, setTuningProfileLabelInput] = useState('')
+  const [tuningProfileNoteInput, setTuningProfileNoteInput] = useState('')
+  const [tuningProfileProtectedInput, setTuningProfileProtectedInput] = useState(false)
+  const [tuningProfileSourceInput, setTuningProfileSourceInput] = useState<TuningProfileSourceMode>('staged')
   const [parameterSearch, setParameterSearch] = useState('')
   const [editedValues, setEditedValues] = useState<Record<string, string>>({})
   const [selectedParameterId, setSelectedParameterId] = useState<string>()
@@ -2608,6 +2828,15 @@ export function App() {
         }
       : undefined
   )
+  const [tuningProfileNotice, setTuningProfileNotice] = useState<ParameterNotice>()
+  const [tuningProfileStorageNotice, setTuningProfileStorageNotice] = useState<ParameterNotice | undefined>(() =>
+    initialTuningProfileStorage.warning
+      ? {
+          tone: 'warning',
+          text: initialTuningProfileStorage.warning
+        }
+      : undefined
+  )
   const [presetNotice, setPresetNotice] = useState<ParameterNotice>()
   const [sessionNotice, setSessionNotice] = useState<ParameterNotice>()
   const [parameterFollowUp, setParameterFollowUp] = useState<ParameterFollowUp>()
@@ -2621,6 +2850,14 @@ export function App() {
   const [rcCalibrationSession, setRcCalibrationSession] = useState<RcCalibrationSessionState>(createIdleRcCalibrationSessionState)
   const [receiverTaskOverride, setReceiverTaskOverride] = useState<ReceiverTaskId>()
   const [outputTaskOverride, setOutputTaskOverride] = useState<OutputTaskId>()
+  const [tuningTaskOverride, setTuningTaskOverride] = useState<TuningTaskId>()
+  const [tuningRollPitchLinked, setTuningRollPitchLinked] = useState(true)
+  const [showAdvancedTuningControls, setShowAdvancedTuningControls] = useState(false)
+  const [tuningMasterPiGain, setTuningMasterPiGain] = useState(1)
+  const [tuningMasterDGain, setTuningMasterDGain] = useState(1)
+  const [tuningMasterFeedforwardGain, setTuningMasterFeedforwardGain] = useState(1)
+  const [tuningMasterPitchRatio, setTuningMasterPitchRatio] = useState(1)
+  const [tuningMasterFilterStrength, setTuningMasterFilterStrength] = useState(1)
   const [showReceiverChannelDetails, setShowReceiverChannelDetails] = useState(false)
   const [showReceiverMappingDiagnostics, setShowReceiverMappingDiagnostics] = useState(false)
   const [motorTestOutput, setMotorTestOutput] = useState<number>()
@@ -3169,6 +3406,143 @@ export function App() {
     () => createDraftSignature(selectedProvisioningProfileDiffEntries),
     [selectedProvisioningProfileDiffEntries]
   )
+  const selectedTuningProfile = useMemo(
+    () => savedTuningProfiles.find((savedProfile) => savedProfile.id === selectedTuningProfileId) ?? savedTuningProfiles[0],
+    [savedTuningProfiles, selectedTuningProfileId]
+  )
+  const selectedTuningProfileRestore = useMemo(
+    () => (selectedTuningProfile ? deriveDraftValuesFromParameterBackup(snapshot.parameters, selectedTuningProfile.backup) : undefined),
+    [selectedTuningProfile, snapshot.parameters]
+  )
+  const selectedTuningProfileDiffEntries = useMemo(
+    () => deriveParameterDraftEntries(snapshot.parameters, selectedTuningProfileRestore?.draftValues ?? {}),
+    [selectedTuningProfileRestore, snapshot.parameters]
+  )
+  const selectedTuningProfileDiffGroups = useMemo(
+    () => groupParameterDraftEntries(selectedTuningProfileDiffEntries, ['staged']),
+    [selectedTuningProfileDiffEntries]
+  )
+  const selectedTuningProfileChangedEntries = useMemo(
+    () => selectedTuningProfileDiffEntries.filter((entry) => entry.status === 'staged'),
+    [selectedTuningProfileDiffEntries]
+  )
+  const selectedTuningProfileInvalidEntries = useMemo(
+    () => selectedTuningProfileDiffEntries.filter((entry) => entry.status === 'invalid'),
+    [selectedTuningProfileDiffEntries]
+  )
+  const tuningProfileSourceBackup = useMemo(() => {
+    const sourceUsesStaged = tuningProfileSourceInput === 'staged'
+    const parameterEntries = sortTuningBackupEntries(
+      TUNING_PARAM_IDS.reduce<ParameterBackupEntry[]>((entries, paramId) => {
+        const parameter = snapshot.parameters.find((entry) => entry.id === paramId)
+        if (!parameter) {
+          return entries
+        }
+
+        const draft = parameterDraftById.get(paramId)
+        const nextValue = sourceUsesStaged && draft?.status === 'staged' && draft.nextValue !== undefined ? draft.nextValue : parameter.value
+        entries.push({
+          id: parameter.id,
+          value: nextValue,
+          category: parameter.definition?.category,
+          label: parameter.definition?.label,
+          unit: parameter.definition?.unit
+        })
+        return entries
+      }, [])
+    )
+
+    return {
+      schemaVersion: 1 as const,
+      application: 'ArduConfigurator' as const,
+      firmware: snapshot.vehicle?.vehicle ?? 'Unknown',
+      exportedAt: new Date().toISOString(),
+      parameterCount: parameterEntries.length,
+      vehicle: snapshot.vehicle
+        ? {
+            firmware: snapshot.vehicle.firmware,
+            vehicle: snapshot.vehicle.vehicle,
+            systemId: snapshot.vehicle.systemId,
+            componentId: snapshot.vehicle.componentId,
+            flightMode: snapshot.vehicle.flightMode
+          }
+        : undefined,
+      parameters: parameterEntries
+    }
+  }, [parameterDraftById, snapshot.parameters, snapshot.vehicle, tuningProfileSourceInput])
+  const tuningProfileSourceUsesStaged = tuningProfileSourceInput === 'staged'
+  const tuningProfileSourceHasStagedTuning = useMemo(
+    () => TUNING_PARAM_IDS.some((paramId) => parameterDraftById.get(paramId)?.status === 'staged'),
+    [parameterDraftById]
+  )
+  const canCreateTuningProfile =
+    tuningProfileSourceBackup.parameters.length > 0 &&
+    (!tuningProfileSourceUsesStaged || tuningProfileSourceHasStagedTuning)
+  const currentTuningValueById = useMemo(() => {
+    const values = new Map<string, number>()
+    TUNING_PARAM_IDS.forEach((paramId) => {
+      const parameter = snapshot.parameters.find((entry) => entry.id === paramId)
+      if (!parameter) {
+        return
+      }
+      const draft = parameterDraftById.get(parameter.id)
+      values.set(parameter.id, draft?.nextValue ?? parameter.value)
+    })
+    return values
+  }, [parameterDraftById, snapshot.parameters])
+  const tuningMasterPreviewDraftValues = useMemo(() => {
+    const nextDraftValues: Record<string, string> = {}
+    const applyScale = (
+      paramIds: readonly string[],
+      scale: number,
+      usePitchRatio = false
+    ) => {
+      paramIds.forEach((paramId) => {
+        const parameter = snapshot.parameters.find((entry) => entry.id === paramId)
+        const currentValue = currentTuningValueById.get(paramId)
+        if (!parameter || currentValue === undefined) {
+          return
+        }
+
+        let effectiveScale = scale
+        if (usePitchRatio && paramId.includes('_PIT_')) {
+          effectiveScale *= tuningMasterPitchRatio
+        }
+
+        const normalizedValue = normalizeTuningNumericValue(parameter, currentValue * effectiveScale)
+        nextDraftValues[paramId] = String(normalizedValue)
+      })
+    }
+
+    applyScale(
+      ['ATC_RAT_RLL_P', 'ATC_RAT_RLL_I', 'ATC_RAT_PIT_P', 'ATC_RAT_PIT_I', 'ATC_RAT_YAW_P', 'ATC_RAT_YAW_I'],
+      tuningMasterPiGain,
+      true
+    )
+    applyScale(['ATC_RAT_RLL_D', 'ATC_RAT_PIT_D', 'ATC_RAT_YAW_D'], tuningMasterDGain, true)
+    applyScale(['ATC_RAT_RLL_FF', 'ATC_RAT_PIT_FF', 'ATC_RAT_YAW_FF'], tuningMasterFeedforwardGain, true)
+    applyScale(TUNING_FILTER_PARAM_IDS, tuningMasterFilterStrength, false)
+
+    return nextDraftValues
+  }, [
+    currentTuningValueById,
+    tuningMasterDGain,
+    tuningMasterFeedforwardGain,
+    tuningMasterFilterStrength,
+    tuningMasterPiGain,
+    tuningMasterPitchRatio,
+    snapshot.parameters
+  ])
+  const tuningMasterPreviewEntries = useMemo(
+    () => deriveParameterDraftEntries(snapshot.parameters, tuningMasterPreviewDraftValues).filter((entry) => entry.status === 'staged'),
+    [snapshot.parameters, tuningMasterPreviewDraftValues]
+  )
+  const tuningMasterDefaultsActive =
+    Math.abs(tuningMasterPiGain - 1) < 0.001 &&
+    Math.abs(tuningMasterDGain - 1) < 0.001 &&
+    Math.abs(tuningMasterFeedforwardGain - 1) < 0.001 &&
+    Math.abs(tuningMasterPitchRatio - 1) < 0.001 &&
+    Math.abs(tuningMasterFilterStrength - 1) < 0.001
   const presetDefinitions = useMemo(() => metadataCatalog.presets, [metadataCatalog.presets])
   const presetGroups = useMemo(
     () => metadataCatalog.presetGroups.filter((group) => (metadataCatalog.presetsByGroup[group.id] ?? []).length > 0),
@@ -3281,6 +3655,18 @@ export function App() {
     () => parameterDraftEntries.filter((entry) => isTuningReviewParamId(entry.id)),
     [parameterDraftEntries]
   )
+  const tuningRateDraftEntries = useMemo(
+    () => parameterDraftEntries.filter((entry) => TUNING_RATE_PARAM_IDS.includes(entry.id as (typeof TUNING_RATE_PARAM_IDS)[number])),
+    [parameterDraftEntries]
+  )
+  const tuningPidDraftEntries = useMemo(
+    () => parameterDraftEntries.filter((entry) => TUNING_ALL_PID_PARAM_IDS.includes(entry.id as (typeof TUNING_ALL_PID_PARAM_IDS)[number])),
+    [parameterDraftEntries]
+  )
+  const tuningFilterDraftEntries = useMemo(
+    () => parameterDraftEntries.filter((entry) => TUNING_FILTER_PARAM_IDS.includes(entry.id as (typeof TUNING_FILTER_PARAM_IDS)[number])),
+    [parameterDraftEntries]
+  )
   const tuningStagedDrafts = useMemo(
     () => tuningDraftEntries.filter((entry) => entry.status === 'staged'),
     [tuningDraftEntries]
@@ -3288,6 +3674,30 @@ export function App() {
   const tuningInvalidDrafts = useMemo(
     () => tuningDraftEntries.filter((entry) => entry.status === 'invalid'),
     [tuningDraftEntries]
+  )
+  const tuningRateStagedDrafts = useMemo(
+    () => tuningRateDraftEntries.filter((entry) => entry.status === 'staged'),
+    [tuningRateDraftEntries]
+  )
+  const tuningRateInvalidDrafts = useMemo(
+    () => tuningRateDraftEntries.filter((entry) => entry.status === 'invalid'),
+    [tuningRateDraftEntries]
+  )
+  const tuningPidStagedDrafts = useMemo(
+    () => tuningPidDraftEntries.filter((entry) => entry.status === 'staged'),
+    [tuningPidDraftEntries]
+  )
+  const tuningPidInvalidDrafts = useMemo(
+    () => tuningPidDraftEntries.filter((entry) => entry.status === 'invalid'),
+    [tuningPidDraftEntries]
+  )
+  const tuningFilterStagedDrafts = useMemo(
+    () => tuningFilterDraftEntries.filter((entry) => entry.status === 'staged'),
+    [tuningFilterDraftEntries]
+  )
+  const tuningFilterInvalidDrafts = useMemo(
+    () => tuningFilterDraftEntries.filter((entry) => entry.status === 'invalid'),
+    [tuningFilterDraftEntries]
   )
   const outputReviewDraftEntries = useMemo(
     () => parameterDraftEntries.filter((entry) => OUTPUT_REVIEW_PARAM_IDS.includes(entry.id as (typeof OUTPUT_REVIEW_PARAM_IDS)[number])),
@@ -3585,19 +3995,71 @@ export function App() {
       ),
     [snapshot.parameters]
   )
+  const tuningParameterById = useMemo(() => new Map(tuningParameters.map((parameter) => [parameter.id, parameter])), [tuningParameters])
   const flightFeelParameters = useMemo(
     () =>
-      TUNING_FLIGHT_FEEL_PARAM_IDS.map((paramId) => tuningParameters.find((parameter) => parameter.id === paramId)).filter(
+      TUNING_FLIGHT_FEEL_PARAM_IDS.map((paramId) => tuningParameterById.get(paramId)).filter(
         (parameter): parameter is ParameterState => parameter !== undefined
       ),
-    [tuningParameters]
+    [tuningParameterById]
+  )
+  const tuningAccelerationParameters = useMemo(
+    () =>
+      TUNING_ACCEL_LIMIT_PARAM_IDS.map((paramId) => tuningParameterById.get(paramId)).filter(
+        (parameter): parameter is ParameterState => parameter !== undefined
+      ),
+    [tuningParameterById]
   )
   const acroTuningParameters = useMemo(
     () =>
-      TUNING_ACRO_PARAM_IDS.map((paramId) => tuningParameters.find((parameter) => parameter.id === paramId)).filter(
+      TUNING_ACRO_PARAM_IDS.map((paramId) => tuningParameterById.get(paramId)).filter(
         (parameter): parameter is ParameterState => parameter !== undefined
       ),
-    [tuningParameters]
+    [tuningParameterById]
+  )
+  const tuningAdvancedPidParameters = useMemo(
+    () =>
+      TUNING_ADVANCED_PID_PARAM_IDS.map((paramId) => tuningParameterById.get(paramId)).filter(
+        (parameter): parameter is ParameterState => parameter !== undefined
+      ),
+    [tuningParameterById]
+  )
+  const tuningFilterParameters = useMemo(
+    () =>
+      TUNING_FILTER_PARAM_IDS.map((paramId) => tuningParameterById.get(paramId)).filter(
+        (parameter): parameter is ParameterState => parameter !== undefined
+      ),
+    [tuningParameterById]
+  )
+  const tuningPidAxisGroups = useMemo(
+    () =>
+      TUNING_PID_AXIS_GROUPS.map((group) => ({
+        ...group,
+        parameters: group.paramIds
+          .map((paramId) => tuningParameterById.get(paramId))
+          .filter((parameter): parameter is ParameterState => parameter !== undefined)
+      })),
+    [tuningParameterById]
+  )
+  const tuningFilterAxisGroups = useMemo(
+    () =>
+      TUNING_FILTER_AXIS_GROUPS.map((group) => ({
+        ...group,
+        parameters: group.paramIds
+          .map((paramId) => tuningParameterById.get(paramId))
+          .filter((parameter): parameter is ParameterState => parameter !== undefined)
+      })),
+    [tuningParameterById]
+  )
+  const tuningAdvancedPidAxisGroups = useMemo(
+    () =>
+      TUNING_ADVANCED_PID_AXIS_GROUPS.map((group) => ({
+        ...group,
+        parameters: group.paramIds
+          .map((paramId) => tuningParameterById.get(paramId))
+          .filter((parameter): parameter is ParameterState => parameter !== undefined)
+      })),
+    [tuningParameterById]
   )
   const outputReviewParameters = useMemo(
     () =>
@@ -6008,6 +6470,185 @@ export function App() {
   )
   const activeReceiverTask = receiverTaskCards.find((task) => task.id === activeReceiverTaskId) ?? receiverTaskCards[0]
 
+  const recommendedTuningTaskId = useMemo<TuningTaskId>(() => {
+    if (tuningRateInvalidDrafts.length > 0) {
+      return 'rates'
+    }
+    if (tuningPidInvalidDrafts.length > 0) {
+      return 'pid-gains'
+    }
+    if (tuningFilterInvalidDrafts.length > 0) {
+      return 'filters'
+    }
+    if (tuningStagedDrafts.length > 0) {
+      return 'review'
+    }
+    return 'rates'
+  }, [
+    tuningFilterInvalidDrafts.length,
+    tuningPidInvalidDrafts.length,
+    tuningRateInvalidDrafts.length,
+    tuningStagedDrafts.length
+  ])
+  const activeTuningTaskId = tuningTaskOverride ?? recommendedTuningTaskId
+  const tuningTaskCards = useMemo<
+    Array<{
+      id: TuningTaskId
+      label: string
+      value: string
+      detail: string
+      tone: StatusTone
+    }>
+  >(
+    () => [
+      {
+        id: 'rates',
+        label: 'Rates',
+        value:
+          tuningRateInvalidDrafts.length > 0
+            ? `${tuningRateInvalidDrafts.length} invalid`
+            : tuningRateStagedDrafts.length > 0
+              ? `${tuningRateStagedDrafts.length} staged`
+              : `${TUNING_RATE_PARAM_IDS.length} controls`,
+        detail:
+          'Flight feel, acceleration shaping, and acro rates stay grouped here so stick response can be tuned quickly without diving into raw parameters.',
+        tone:
+          tuningRateInvalidDrafts.length > 0 ? 'danger' : tuningRateStagedDrafts.length > 0 ? 'warning' : 'neutral'
+      },
+      {
+        id: 'pid-gains',
+        label: 'PID Gains',
+        value:
+          tuningPidInvalidDrafts.length > 0
+            ? `${tuningPidInvalidDrafts.length} invalid`
+            : tuningPidStagedDrafts.length > 0
+              ? `${tuningPidStagedDrafts.length} staged`
+              : `${TUNING_ALL_PID_PARAM_IDS.length} gains`,
+        detail:
+          'Roll, pitch, and yaw rate gains are exposed as curated ArduPilot P, I, D, and feedforward controls rather than raw controller tables.',
+        tone:
+          tuningPidInvalidDrafts.length > 0 ? 'danger' : tuningPidStagedDrafts.length > 0 ? 'warning' : 'neutral'
+      },
+      {
+        id: 'filters',
+        label: 'Filters',
+        value:
+          tuningFilterInvalidDrafts.length > 0
+            ? `${tuningFilterInvalidDrafts.length} invalid`
+            : tuningFilterStagedDrafts.length > 0
+              ? `${tuningFilterStagedDrafts.length} staged`
+              : `${TUNING_FILTER_PARAM_IDS.length} filters`,
+        detail:
+          'Target, error, and D-term filters stay together so noise-handling changes can be reviewed as one deliberate pass.',
+        tone:
+          tuningFilterInvalidDrafts.length > 0 ? 'danger' : tuningFilterStagedDrafts.length > 0 ? 'warning' : 'neutral'
+      },
+      {
+        id: 'profiles',
+        label: 'Profiles',
+        value:
+          selectedTuningProfileInvalidEntries.length > 0
+            ? `${selectedTuningProfileInvalidEntries.length} invalid`
+            : selectedTuningProfileChangedEntries.length > 0
+              ? `${selectedTuningProfileChangedEntries.length} diff`
+              : savedTuningProfiles.length > 0
+                ? `${savedTuningProfiles.length} saved`
+                : 'None saved',
+        detail:
+          savedTuningProfiles.length > 0
+            ? 'Save known-good tunes locally, restage them later, and keep a small reusable tuning library for similar builds.'
+            : 'Capture the live or staged tune into a reusable local profile before making larger experiments.',
+        tone:
+          selectedTuningProfileInvalidEntries.length > 0
+            ? 'danger'
+            : selectedTuningProfileChangedEntries.length > 0
+              ? 'warning'
+              : savedTuningProfiles.length > 0
+                ? 'success'
+                : 'neutral'
+      },
+      {
+        id: 'review',
+        label: 'Review',
+        value:
+          tuningInvalidDrafts.length > 0
+            ? `${tuningInvalidDrafts.length} invalid`
+            : tuningStagedDrafts.length > 0
+              ? `${tuningStagedDrafts.length} staged`
+              : 'In sync',
+        detail:
+          tuningStagedDrafts.length > 0
+            ? 'Tuning changes are staged locally. Review the grouped diff before writing them to the controller.'
+            : tuningInvalidDrafts.length > 0
+              ? 'Some tuning changes need attention before they can be applied safely.'
+              : 'Tuning values are currently in sync with the live controller snapshot.',
+        tone:
+          tuningInvalidDrafts.length > 0 ? 'danger' : tuningStagedDrafts.length > 0 ? 'warning' : 'success'
+      }
+    ],
+    [
+      tuningFilterInvalidDrafts.length,
+      tuningFilterStagedDrafts.length,
+      tuningInvalidDrafts.length,
+      tuningPidInvalidDrafts.length,
+      tuningPidStagedDrafts.length,
+      tuningRateInvalidDrafts.length,
+      tuningRateStagedDrafts.length,
+      tuningStagedDrafts.length,
+      savedTuningProfiles.length,
+      selectedTuningProfileChangedEntries.length,
+      selectedTuningProfileInvalidEntries.length
+    ]
+  )
+  const activeTuningTask = tuningTaskCards.find((task) => task.id === activeTuningTaskId) ?? tuningTaskCards[0]
+
+  const renderTuningControl = (parameter: ParameterState): JSX.Element => {
+    const draft = parameterDraftById.get(parameter.id)
+    const { min, max, step } = tuningControlBounds(parameter)
+    const inputValue = tuningInputValue(parameter, editedValues)
+    const numericValue = tuningNumericValue(parameter, editedValues)
+    const currentValue = formatTuningDisplayValue(parameter, parameter.value)
+    const stagedValue = formatTuningDisplayValue(parameter, draft?.nextValue ?? parameter.value)
+
+    return (
+      <article key={parameter.id} className={`tuning-control tuning-control--${draft?.status ?? 'unchanged'}`}>
+        <div className="tuning-control__header">
+          <div>
+            <span>{parameter.definition?.label ?? parameter.id}</span>
+            <strong>{stagedValue}</strong>
+          </div>
+          {draft?.status === 'staged' ? <StatusBadge tone="warning">staged</StatusBadge> : null}
+          {draft?.status === 'invalid' ? <StatusBadge tone="danger">invalid</StatusBadge> : null}
+        </div>
+
+        <input
+          className="tuning-control__range"
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={numericValue}
+          onChange={(event) => handleStageTuningParameterValue(parameter, event.target.value)}
+        />
+
+        <div className="tuning-control__footer">
+          <input
+            data-testid={`tuning-input-${parameter.id}`}
+            type="number"
+            min={min}
+            max={max}
+            step={step}
+            value={inputValue}
+            onChange={(event) => handleStageTuningParameterValue(parameter, event.target.value)}
+          />
+          <small>
+            {draft?.status === 'staged' ? `Current ${currentValue}` : draft?.reason ?? `Current ${currentValue}`}
+          </small>
+        </div>
+      </article>
+    )
+  }
+
   const motorVerificationSummary = (() => {
     if (motorVerification.status === 'passed') {
       return 'Every mapped motor output was stepped through and operator-confirmed.'
@@ -7705,6 +8346,155 @@ export function App() {
     )
   }
 
+  function handleStageTuningParameterValue(parameter: ParameterState, nextValue: string): void {
+    setEditedValues((existing) => {
+      let nextEditedValues = applyTuningEditedValue(existing, parameter, nextValue)
+
+      if (tuningRollPitchLinked) {
+        const counterpartId = linkedTuningCounterpartId(parameter.id)
+        const counterpartParameter = counterpartId ? tuningParameterById.get(counterpartId) : undefined
+        if (counterpartParameter) {
+          nextEditedValues = applyTuningEditedValue(nextEditedValues, counterpartParameter, nextValue)
+        }
+      }
+
+      return nextEditedValues
+    })
+  }
+
+  function handleResetTuningMasterSliders(): void {
+    setTuningMasterPiGain(1)
+    setTuningMasterDGain(1)
+    setTuningMasterFeedforwardGain(1)
+    setTuningMasterPitchRatio(1)
+    setTuningMasterFilterStrength(1)
+  }
+
+  function handleStageTuningMasterAdjustments(): void {
+    if (tuningMasterDefaultsActive || tuningMasterPreviewEntries.length === 0) {
+      setParameterNotice({
+        tone: 'warning',
+        text: 'Move at least one master slider before staging grouped tuning changes.'
+      })
+      return
+    }
+
+    setEditedValues((existing) => ({
+      ...existing,
+      ...tuningMasterPreviewDraftValues
+    }))
+    setTuningTaskOverride('review')
+    setParameterNotice({
+      tone: 'success',
+      text: `Staged ${tuningMasterPreviewEntries.length} grouped tuning change(s) from the master sliders.`
+    })
+  }
+
+  function handleCreateTuningProfile(): void {
+    if (!canCreateTuningProfile) {
+      setTuningProfileNotice({
+        tone: 'warning',
+        text:
+          tuningProfileSourceUsesStaged
+            ? 'Stage at least one tuning change before saving a staged tuning profile.'
+            : 'No tuning parameters are currently available to capture into a tuning profile.'
+      })
+      return
+    }
+
+    const profile: SavedTuningProfile = {
+      id: createTuningProfileId(),
+      label: tuningProfileLabelInput.trim() || `Tuning profile ${savedTuningProfiles.length + 1}`,
+      createdAt: new Date().toISOString(),
+      note: tuningProfileNoteInput.trim() || undefined,
+      tags: [],
+      protected: tuningProfileProtectedInput,
+      source: tuningProfileSourceInput,
+      backup: tuningProfileSourceBackup
+    }
+
+    setSavedTuningProfiles((current) => sortTuningProfiles([profile, ...current.filter((entry) => entry.id !== profile.id)]))
+    setSelectedTuningProfileId(profile.id)
+    setTuningProfileLabelInput('')
+    setTuningProfileNoteInput('')
+    setTuningProfileProtectedInput(false)
+    setTuningProfileSourceInput('staged')
+    setTuningProfileNotice({
+      tone: 'success',
+      text: `Saved tuning profile "${profile.label}" with ${profile.backup.parameterCount} tuning parameter(s).`
+    })
+  }
+
+  function handleStageSelectedTuningProfile(): void {
+    if (!selectedTuningProfile || !selectedTuningProfileRestore) {
+      return
+    }
+
+    if (selectedTuningProfileChangedEntries.length === 0) {
+      setTuningProfileNotice({
+        tone: 'neutral',
+        text: `Tuning profile "${selectedTuningProfile.label}" already matches the current live tune.`
+      })
+      return
+    }
+
+    setEditedValues((existing) => ({
+      ...existing,
+      ...selectedTuningProfileRestore.draftValues
+    }))
+    setTuningTaskOverride('review')
+    setTuningProfileNotice({
+      tone: 'success',
+      text: `Staged ${selectedTuningProfileChangedEntries.length} tuning change(s) from "${selectedTuningProfile.label}".`
+    })
+  }
+
+  function handleDeleteSelectedTuningProfile(): void {
+    if (!selectedTuningProfile) {
+      return
+    }
+
+    if (selectedTuningProfile.protected) {
+      setTuningProfileNotice({
+        tone: 'warning',
+        text: `Tuning profile "${selectedTuningProfile.label}" is protected. Unprotect it before deleting it from the local library.`
+      })
+      return
+    }
+
+    setSavedTuningProfiles((current) => current.filter((entry) => entry.id !== selectedTuningProfile.id))
+    setTuningProfileNotice({
+      tone: 'neutral',
+      text: `Deleted tuning profile "${selectedTuningProfile.label}" from the local browser library.`
+    })
+  }
+
+  function handleToggleSelectedTuningProfileProtection(): void {
+    if (!selectedTuningProfile) {
+      return
+    }
+
+    const nextProtected = !selectedTuningProfile.protected
+    setSavedTuningProfiles((current) =>
+      sortTuningProfiles(
+        current.map((entry) =>
+          entry.id === selectedTuningProfile.id
+            ? {
+                ...entry,
+                protected: nextProtected
+              }
+            : entry
+        )
+      )
+    )
+    setTuningProfileNotice({
+      tone: 'success',
+      text: nextProtected
+        ? `Tuning profile "${selectedTuningProfile.label}" is now protected against deletion.`
+        : `Tuning profile "${selectedTuningProfile.label}" is no longer protected.`
+    })
+  }
+
   function renderAdditionalSettingsCard(
     title: string,
     description: string,
@@ -7896,6 +8686,18 @@ export function App() {
   }, [savedProvisioningProfiles])
 
   useEffect(() => {
+    const persistence = persistTuningProfiles(savedTuningProfiles)
+    setTuningProfileStorageNotice(
+      persistence.warning
+        ? {
+            tone: 'warning',
+            text: persistence.warning
+          }
+        : undefined
+    )
+  }, [savedTuningProfiles])
+
+  useEffect(() => {
     setMavftpPathInput(mavftpBrowser.path)
   }, [mavftpBrowser.path])
 
@@ -7964,6 +8766,19 @@ export function App() {
       setSelectedProvisioningProfileId(savedProvisioningProfiles[0]?.id)
     }
   }, [savedProvisioningProfiles, selectedProvisioningProfileId])
+
+  useEffect(() => {
+    if (savedTuningProfiles.length === 0) {
+      if (selectedTuningProfileId !== undefined) {
+        setSelectedTuningProfileId(undefined)
+      }
+      return
+    }
+
+    if (!selectedTuningProfileId || !savedTuningProfiles.some((savedProfile) => savedProfile.id === selectedTuningProfileId)) {
+      setSelectedTuningProfileId(savedTuningProfiles[0]?.id)
+    }
+  }, [savedTuningProfiles, selectedTuningProfileId])
 
   useEffect(() => {
     if (presetDefinitions.length === 0) {
@@ -14451,27 +15266,28 @@ export function App() {
       ) : null}
 
       {activeViewId === 'tuning' ? (
-      <section className="grid one-up">
+      <section className="grid one-up tuning-page">
         <Panel
           title="Tuning"
-          subtitle="Keep the first tuning pass small and reliable: adjust flight feel and acro rates here, then use Expert mode only when you need deeper controller work."
+          subtitle="Curated ArduPilot rate, gain, and filter tuning with the same staged review and verified write path used everywhere else in the configurator."
         >
-          <div className="telemetry-stack">
-            <div className="telemetry-header">
-              <div>
-                <h3>Simple tuning baseline</h3>
-                <p>
-                  This surface intentionally stays narrow so setup and configuration remain the center of the product. Start with these grouped
-                  controls, save small changes, and fly-test before opening broader expert tuning.
-                </p>
-              </div>
-              <StatusBadge tone={toneForScopedDraftReview(tuningStagedDrafts.length, tuningInvalidDrafts.length)}>
-                {tuningInvalidDrafts.length > 0
-                  ? `${tuningInvalidDrafts.length} invalid`
-                  : tuningStagedDrafts.length > 0
-                    ? `${tuningStagedDrafts.length} staged`
-                    : 'in sync'}
-              </StatusBadge>
+          <div className="telemetry-stack telemetry-stack--tuning">
+            <div className="tuning-summary-grid">
+              {tuningTaskCards.map((task) => (
+                <button
+                  key={task.id}
+                  type="button"
+                  data-testid={`tuning-summary-${task.id}`}
+                  className={`tuning-summary-card${task.id === activeTuningTaskId ? ' is-active' : ''}`}
+                  onClick={() => setTuningTaskOverride(task.id)}
+                >
+                  <div className="tuning-summary-card__header">
+                    <span>{task.label}</span>
+                    <StatusBadge tone={task.tone}>{task.value}</StatusBadge>
+                  </div>
+                  <p>{task.detail}</p>
+                </button>
+              ))}
             </div>
 
             {parameterNotice ? (
@@ -14481,208 +15297,840 @@ export function App() {
               </div>
             ) : null}
 
-            <div className="telemetry-metric-grid">
-              <article className="telemetry-metric-card">
-                <span>Live mode</span>
-                <strong>{snapshot.vehicle?.flightMode ?? 'Unknown'}</strong>
-              </article>
-              <article className="telemetry-metric-card">
-                <span>RC link</span>
-                <strong>{snapshot.liveVerification.rcInput.verified ? 'Verified' : 'Not live'}</strong>
-              </article>
-              <article className="telemetry-metric-card">
-                <span>Staged tuning changes</span>
-                <strong>{tuningStagedDrafts.length}</strong>
-              </article>
-              <article className="telemetry-metric-card">
-                <span>Curated controls</span>
-                <strong>{tuningParameters.length}</strong>
-              </article>
-            </div>
-
-            <div className="tuning-card-grid">
-              <article className="tuning-card">
-                <div className="switch-exercise-card__header">
+            <div className="tuning-workspace tuning-workspace--task-deck">
+              <div className="tuning-workspace__task tuning-task-deck">
+                <div className="tuning-task-deck__header">
                   <div>
-                    <strong>Flight feel</strong>
-                    <p>General stick feel for self-leveling flight, yaw authority, and maximum lean angle.</p>
+                    <h3>{activeTuningTask.label}</h3>
+                    <p>{activeTuningTask.detail}</p>
                   </div>
-                  <StatusBadge tone="neutral">{flightFeelParameters.length} controls</StatusBadge>
+                  <StatusBadge tone={activeTuningTask.tone}>{activeTuningTask.value}</StatusBadge>
                 </div>
 
-                <div className="tuning-field-grid">
-                  {flightFeelParameters.map((parameter) => {
-                    const draft = parameterDraftById.get(parameter.id)
-                    const inputValue = tuningInputValue(parameter, editedValues)
-                    const displayValue =
-                      parameter.id === 'ANGLE_MAX'
-                        ? formatAngleMaxDegrees(draft?.nextValue ?? parameter.value)
-                        : formatParameterDisplayValue(parameter, draft?.nextValue ?? parameter.value)
-
-                    return (
-                      <label key={parameter.id} className={`scoped-editor-field scoped-editor-field--${draft?.status ?? 'unchanged'}`}>
-                        <span>{parameter.definition?.label ?? parameter.id}</span>
-                        <input
-                          data-testid={`tuning-input-${parameter.id}`}
-                          type="number"
-                          min={parameter.id === 'ANGLE_MAX' ? 10 : parameter.definition?.minimum}
-                          max={parameter.id === 'ANGLE_MAX' ? 80 : parameter.definition?.maximum}
-                          step={parameter.id === 'ANGLE_MAX' ? 1 : parameter.definition?.step ?? 0.01}
-                          value={inputValue}
-                          onChange={(event) => stageTuningInputValue(parameter, event.target.value, setEditedValues)}
-                        />
-                        <small>
-                          {parameter.id === 'ANGLE_MAX'
-                            ? `Current ${formatAngleMaxDegrees(parameter.value)}. Staged ${displayValue}.`
-                            : draft?.status === 'staged'
-                              ? `Staged ${displayValue}`
-                              : draft?.reason ?? `Current ${displayValue}`}
-                        </small>
-                      </label>
-                    )
-                  })}
-                </div>
-
-                <ul className="output-note-list">
-                  <li>Lower smoothing makes the quad feel more immediate; higher smoothing makes it feel softer.</li>
-                  <li>Lean-angle changes are shown in degrees here, even though ArduPilot stores `ANGLE_MAX` in centidegrees.</li>
-                  <li>Increase yaw values slowly and confirm control feel with a short test flight between changes.</li>
-                </ul>
-              </article>
-
-              <article className="tuning-card">
-                <div className="switch-exercise-card__header">
-                  <div>
-                    <strong>Acro rates & expo</strong>
-                    <p>Core FPV-style acro handling only. PID banks and deeper controller tuning stay out of this first pass.</p>
-                  </div>
-                  <StatusBadge tone="neutral">{acroTuningParameters.length} controls</StatusBadge>
-                </div>
-
-                <div className="tuning-field-grid">
-                  {acroTuningParameters.map((parameter) => {
-                    const draft = parameterDraftById.get(parameter.id)
-                    const inputValue = tuningInputValue(parameter, editedValues)
-                    const displayValue = formatParameterDisplayValue(parameter, draft?.nextValue ?? parameter.value)
-
-                    return (
-                      <label key={parameter.id} className={`scoped-editor-field scoped-editor-field--${draft?.status ?? 'unchanged'}`}>
-                        <span>{parameter.definition?.label ?? parameter.id}</span>
-                        <input
-                          data-testid={`tuning-input-${parameter.id}`}
-                          type="number"
-                          min={parameter.definition?.minimum}
-                          max={parameter.definition?.maximum}
-                          step={parameter.definition?.step ?? 0.01}
-                          value={inputValue}
-                          onChange={(event) => stageTuningInputValue(parameter, event.target.value, setEditedValues)}
-                        />
-                        <small>
-                          {draft?.status === 'staged'
-                            ? `Staged ${displayValue}`
-                            : draft?.reason ?? `Current ${displayValue}`}
-                        </small>
-                      </label>
-                    )
-                  })}
-                </div>
-
-                <div className="config-pills">
-                  <span>Roll/pitch rates</span>
-                  <span>Yaw rate</span>
-                  <span>Roll/pitch expo</span>
-                  <span>Yaw expo</span>
-                </div>
-
-                <ul className="output-note-list">
-                  <li>Rates set the maximum rotation speed in Acro mode.</li>
-                  <li>Expo softens the center stick area without reducing full-stick authority.</li>
-                  <li>If you need deeper tune changes than rates/expo, switch to Expert and use the raw parameter tools deliberately.</li>
-                </ul>
-              </article>
-            </div>
-
-            <div className="tuning-card-grid">
-              <RateCurveGraph
-                maxRate={Number(editedValues['ACRO_RP_RATE'] ?? readParameterValue(snapshot, 'ACRO_RP_RATE') ?? 360)}
-                expo={Number(editedValues['ACRO_RP_EXPO'] ?? readParameterValue(snapshot, 'ACRO_RP_EXPO') ?? 0)}
-                label="Roll / Pitch"
-              />
-              <RateCurveGraph
-                maxRate={Number(editedValues['ACRO_Y_RATE'] ?? readParameterValue(snapshot, 'ACRO_Y_RATE') ?? 180)}
-                expo={Number(editedValues['ACRO_Y_EXPO'] ?? readParameterValue(snapshot, 'ACRO_Y_EXPO') ?? 0)}
-                label="Yaw"
-                color="#dab254"
-              />
-            </div>
-
-            <div className="scoped-review-card">
-              <div className="switch-exercise-card__header">
-                <div>
-                  <strong>Tuning changes in review</strong>
-                  <p>Keep this first tuning surface simple: stage local drafts here, apply them here, and use Expert mode only for deeper follow-up.</p>
-                </div>
-                <StatusBadge tone={toneForScopedDraftReview(tuningStagedDrafts.length, tuningInvalidDrafts.length)}>
-                  {tuningInvalidDrafts.length > 0
-                    ? `${tuningInvalidDrafts.length} invalid`
-                    : tuningStagedDrafts.length > 0
-                      ? `${tuningStagedDrafts.length} staged`
-                      : 'in sync'}
-                </StatusBadge>
-              </div>
-
-              {tuningDraftEntries.length > 0 ? (
-                <div className="scoped-draft-list">
-                  {tuningDraftEntries.map((draft) => (
-                    <article key={draft.id} className={`scoped-draft-item scoped-draft-item--${draft.status}`}>
-                      <div className="scoped-draft-item__header">
-                        <strong>{draft.label}</strong>
-                        <StatusBadge tone={toneForParameterDraftStatus(draft.status)}>{draft.status}</StatusBadge>
-                      </div>
-                      <p>{draft.id}</p>
-                      <small>
-                        {draft.status === 'staged'
-                          ? `${formatParameterValue(draft.currentValue, draft.definition?.unit)} to ${formatParameterValue(
-                              draft.nextValue,
-                              draft.definition?.unit
-                            )}`
-                          : draft.reason ?? 'Draft matches the live controller value.'}
-                      </small>
-                    </article>
+                <div className="tuning-task-nav" data-testid="tuning-task-nav">
+                  {tuningTaskCards.map((task) => (
+                    <button
+                      key={`tuning-task-nav:${task.id}`}
+                      type="button"
+                      className={`tuning-task-nav__button${task.id === activeTuningTaskId ? ' is-active' : ''}`}
+                      onClick={() => setTuningTaskOverride(task.id)}
+                    >
+                      <span>{task.label}</span>
+                      <small>{task.value}</small>
+                    </button>
                   ))}
                 </div>
-              ) : (
-                <p className="success-copy">No tuning changes are staged right now.</p>
-              )}
 
-              <div className="switch-exercise-controls">
-                <button
-                  data-testid="apply-tuning-changes-button"
-                  style={buttonStyle('primary')}
-                  onClick={() => void handleApplyScopedParameterDrafts(tuningDraftEntries, 'tuning:apply', 'Tuning')}
-                  disabled={
-                    busyAction !== undefined ||
-                    tuningStagedDrafts.length === 0 ||
-                    tuningInvalidDrafts.length > 0 ||
-                    !canApplyDraftParameters
-                  }
-                >
-                  {busyAction === 'tuning:apply' ? 'Applying…' : `Apply Tuning Changes (${tuningStagedDrafts.length})`}
-                </button>
-                <button
-                  style={buttonStyle()}
-                  onClick={() => handleDiscardScopedParameterDrafts(tuningDraftEntries.map((entry) => entry.id), 'tuning')}
-                  disabled={busyAction !== undefined || tuningDraftEntries.length === 0}
-                >
-                  Discard Tuning Changes
-                </button>
+                {activeTuningTaskId === 'rates' ? (
+                  <div className="tuning-task-panel tuning-task-panel--stack">
+                    <section className="bf-gui-box">
+                      <div className="bf-gui-box__titlebar">
+                        <strong>Flight Feel</strong>
+                      </div>
+                      <div className="bf-gui-box__body">
+                        <div className="switch-exercise-card__header">
+                          <div>
+                            <strong>General response</strong>
+                            <p>Smoothing, lean angle, and yaw authority for self-leveling and general handling.</p>
+                          </div>
+                          <StatusBadge tone={toneForScopedDraftReview(tuningRateStagedDrafts.length, tuningRateInvalidDrafts.length)}>
+                            {flightFeelParameters.length} controls
+                          </StatusBadge>
+                        </div>
+
+                        <div className="tuning-control-grid">
+                          {flightFeelParameters.map((parameter) => renderTuningControl(parameter))}
+                        </div>
+
+                        <ul className="output-note-list">
+                          <li>Lower smoothing makes the quad feel more immediate; higher smoothing makes it calmer and softer.</li>
+                          <li>Lean-angle changes are shown in degrees here even though `ANGLE_MAX` is stored in centidegrees.</li>
+                          <li>Increase yaw values slowly and validate feel with a short hover or line-of-sight test before pushing further.</li>
+                        </ul>
+                      </div>
+                    </section>
+
+                    <section className="bf-gui-box">
+                      <div className="bf-gui-box__titlebar">
+                        <strong>Acro Rates</strong>
+                      </div>
+                      <div className="bf-gui-box__body">
+                        <div className="switch-exercise-card__header">
+                          <div>
+                            <strong>Rates, expo, and accel shaping</strong>
+                            <p>Curated FPV-style rate shaping backed by real ArduPilot acro-rate and angular-acceleration parameters.</p>
+                          </div>
+                          <StatusBadge tone="neutral">{acroTuningParameters.length + tuningAccelerationParameters.length} controls</StatusBadge>
+                        </div>
+
+                        <div className="tuning-control-grid">
+                          {acroTuningParameters.map((parameter) => renderTuningControl(parameter))}
+                          {tuningAccelerationParameters.map((parameter) => renderTuningControl(parameter))}
+                        </div>
+
+                        <div className="tuning-curve-grid">
+                          <RateCurveGraph
+                            maxRate={Number(editedValues['ACRO_RP_RATE'] ?? readParameterValue(snapshot, 'ACRO_RP_RATE') ?? 360)}
+                            expo={Number(editedValues['ACRO_RP_EXPO'] ?? readParameterValue(snapshot, 'ACRO_RP_EXPO') ?? 0)}
+                            label="Roll / Pitch"
+                            testId="tuning-rate-curve-roll"
+                          />
+                          <RateCurveGraph
+                            maxRate={Number(editedValues['ACRO_Y_RATE'] ?? readParameterValue(snapshot, 'ACRO_Y_RATE') ?? 180)}
+                            expo={Number(editedValues['ACRO_Y_EXPO'] ?? readParameterValue(snapshot, 'ACRO_Y_EXPO') ?? 0)}
+                            label="Yaw"
+                            color="#dab254"
+                            testId="tuning-rate-curve-yaw"
+                          />
+                        </div>
+
+                        <ul className="output-note-list">
+                          <li>Rates set maximum rotation speed. Expo softens the center without reducing full-stick authority.</li>
+                          <li>Acceleration limits control how aggressively the controller tries to reach the commanded rate.</li>
+                          <li>Keep changes small and save a known-good snapshot before pushing responsiveness higher.</li>
+                        </ul>
+                      </div>
+                    </section>
+                  </div>
+                ) : null}
+
+                {activeTuningTaskId === 'pid-gains' ? (
+                  <div className="tuning-task-panel tuning-task-panel--stack">
+                    <section className="bf-gui-box">
+                      <div className="bf-gui-box__titlebar">
+                        <strong>PID Gains</strong>
+                      </div>
+                      <div className="bf-gui-box__body">
+                        <div className="switch-exercise-card__header">
+                          <div>
+                            <strong>Axis controller gains</strong>
+                            <p>P, I, D, feedforward, and deeper controller limits stay grouped by axis so roll, pitch, and yaw can be reviewed deliberately.</p>
+                          </div>
+                          <StatusBadge tone={toneForScopedDraftReview(tuningPidStagedDrafts.length, tuningPidInvalidDrafts.length)}>
+                            {TUNING_ALL_PID_PARAM_IDS.length} gains
+                          </StatusBadge>
+                        </div>
+
+                        <div className="tuning-inline-toggle tuning-inline-toggle--review">
+                          <div>
+                            <strong>Roll / pitch link</strong>
+                            <p>
+                              Keep roll and pitch coupled while roughing in a baseline tune, then unlink them only if the airframe needs a deliberate
+                              asymmetry.
+                            </p>
+                          </div>
+                          <div className="tuning-inline-toggle__actions">
+                            <button
+                              type="button"
+                              data-testid="tuning-roll-pitch-link-button"
+                              style={buttonStyle(tuningRollPitchLinked ? 'primary' : 'secondary')}
+                              onClick={() => setTuningRollPitchLinked(true)}
+                              disabled={tuningRollPitchLinked}
+                            >
+                              Linked
+                            </button>
+                            <button
+                              type="button"
+                              data-testid="tuning-roll-pitch-unlink-button"
+                              style={buttonStyle(!tuningRollPitchLinked ? 'primary' : 'secondary')}
+                              onClick={() => setTuningRollPitchLinked(false)}
+                              disabled={!tuningRollPitchLinked}
+                            >
+                              Unlink
+                            </button>
+                          </div>
+                        </div>
+
+                        <article className="tuning-master-card">
+                          <div className="tuning-master-card__header">
+                            <div>
+                              <strong>Grouped master sliders</strong>
+                              <p>Make a coordinated first-pass change, preview exactly which tuned parameters move, then stage the whole set at once.</p>
+                            </div>
+                            <StatusBadge tone={tuningMasterDefaultsActive ? 'neutral' : 'warning'}>
+                              {tuningMasterPreviewEntries.length > 0 ? `${tuningMasterPreviewEntries.length} preview` : 'neutral'}
+                            </StatusBadge>
+                          </div>
+
+                          <div className="tuning-master-slider-grid">
+                            {[
+                              {
+                                id: 'pi',
+                                label: 'P + I scale',
+                                detail: 'Scales roll, pitch, and yaw P/I gains together.',
+                                value: tuningMasterPiGain,
+                                min: 0.7,
+                                max: 1.3,
+                                step: 0.01,
+                                setValue: setTuningMasterPiGain
+                              },
+                              {
+                                id: 'd',
+                                label: 'D scale',
+                                detail: 'Raises or lowers derivative damping together across the tune.',
+                                value: tuningMasterDGain,
+                                min: 0.7,
+                                max: 1.3,
+                                step: 0.01,
+                                setValue: setTuningMasterDGain
+                              },
+                              {
+                                id: 'ff',
+                                label: 'Feedforward scale',
+                                detail: 'Adjusts stick immediacy without changing the rest of the controller stack.',
+                                value: tuningMasterFeedforwardGain,
+                                min: 0.7,
+                                max: 1.3,
+                                step: 0.01,
+                                setValue: setTuningMasterFeedforwardGain
+                              },
+                              {
+                                id: 'pitch-ratio',
+                                label: 'Pitch ratio',
+                                detail: 'Offsets pitch against roll when the airframe genuinely needs a pitch bias.',
+                                value: tuningMasterPitchRatio,
+                                min: 0.85,
+                                max: 1.15,
+                                step: 0.01,
+                                setValue: setTuningMasterPitchRatio
+                              },
+                              {
+                                id: 'filter',
+                                label: 'Filter frequency scale',
+                                detail: 'Moves the exposed filter frequencies together without hiding which real params will change.',
+                                value: tuningMasterFilterStrength,
+                                min: 0.8,
+                                max: 1.2,
+                                step: 0.01,
+                                setValue: setTuningMasterFilterStrength
+                              }
+                            ].map((slider) => (
+                              <label key={`tuning-master:${slider.id}`} className="tuning-master-slider">
+                                <div className="tuning-master-slider__header">
+                                  <span>
+                                    <strong>{slider.label}</strong>
+                                    <small>{slider.detail}</small>
+                                  </span>
+                                  <code>{slider.value.toFixed(2)}x</code>
+                                </div>
+                                <input
+                                  data-testid={`tuning-master-${slider.id}-range`}
+                                  type="range"
+                                  min={slider.min}
+                                  max={slider.max}
+                                  step={slider.step}
+                                  value={slider.value}
+                                  onChange={(event) => slider.setValue(Number(event.target.value))}
+                                />
+                              </label>
+                            ))}
+                          </div>
+
+                          {tuningMasterPreviewEntries.length > 0 ? (
+                            <div className="config-pills">
+                              {tuningMasterPreviewEntries.slice(0, 9).map((entry) => (
+                                <span key={`tuning-master-preview:${entry.id}`}>
+                                  {entry.label}: {formatParameterValue(entry.nextValue, entry.definition?.unit)}
+                                </span>
+                              ))}
+                              {tuningMasterPreviewEntries.length > 9 ? (
+                                <span>+{tuningMasterPreviewEntries.length - 9} more</span>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <p className="telemetry-note">
+                              Leave every slider at <code>1.00x</code> to keep the preview neutral. The grouped stage button only enables once something
+                              moves.
+                            </p>
+                          )}
+
+                          <div className="switch-exercise-controls">
+                            <button
+                              type="button"
+                              style={buttonStyle()}
+                              onClick={handleResetTuningMasterSliders}
+                              disabled={tuningMasterDefaultsActive}
+                            >
+                              Reset Master Sliders
+                            </button>
+                            <button
+                              type="button"
+                              data-testid="tuning-stage-master-adjustments-button"
+                              style={buttonStyle('primary')}
+                              onClick={handleStageTuningMasterAdjustments}
+                              disabled={tuningMasterDefaultsActive || tuningMasterPreviewEntries.length === 0}
+                            >
+                              Stage Grouped Tuning Changes
+                            </button>
+                          </div>
+                        </article>
+
+                        <div className="tuning-axis-grid">
+                          {tuningPidAxisGroups.map((group) => (
+                            <article key={`tuning-pid-axis:${group.id}`} className="tuning-axis-card">
+                              <div className="tuning-axis-card__header">
+                                <strong>{group.label}</strong>
+                                <span>{group.parameters.length} controls</span>
+                              </div>
+                              <div className="tuning-control-grid tuning-control-grid--compact">
+                                {group.parameters.map((parameter) => renderTuningControl(parameter))}
+                              </div>
+                            </article>
+                          ))}
+                        </div>
+
+                        {tuningAdvancedPidParameters.length > 0 ? (
+                          <div className="tuning-inline-toggle tuning-inline-toggle--review">
+                            <div>
+                              <strong>Advanced controller terms</strong>
+                              <p>
+                                D feedforward, integrator clamps, PD ceilings, and slew limits stay behind a foldout so the baseline PID pass stays clean.
+                              </p>
+                            </div>
+                            <div className="tuning-inline-toggle__actions">
+                              <button
+                                type="button"
+                                data-testid="tuning-toggle-advanced-button"
+                                style={buttonStyle(showAdvancedTuningControls ? 'primary' : 'secondary')}
+                                onClick={() => setShowAdvancedTuningControls((current) => !current)}
+                              >
+                                {showAdvancedTuningControls ? 'Hide Advanced Terms' : 'Show Advanced Terms'}
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {showAdvancedTuningControls && tuningAdvancedPidParameters.length > 0 ? (
+                          <div className="tuning-axis-grid">
+                            {tuningAdvancedPidAxisGroups.map((group) => (
+                              <article key={`tuning-advanced-axis:${group.id}`} className="tuning-axis-card">
+                                <div className="tuning-axis-card__header">
+                                  <strong>{group.label}</strong>
+                                  <span>{group.parameters.length} advanced</span>
+                                </div>
+                                <div className="tuning-control-grid tuning-control-grid--compact">
+                                  {group.parameters.map((parameter) => renderTuningControl(parameter))}
+                                </div>
+                              </article>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        <ul className="output-note-list">
+                          <li>Keep roll and pitch close unless the aircraft has a real asymmetry that justifies diverging them.</li>
+                          <li>Feedforward increases stick-to-rate immediacy; use it deliberately rather than masking a weak base tune.</li>
+                          <li>If you move P, I, or D significantly, re-check filters and do a short test flight before stacking more changes.</li>
+                        </ul>
+                      </div>
+                    </section>
+                  </div>
+                ) : null}
+
+                {activeTuningTaskId === 'filters' ? (
+                  <div className="tuning-task-panel tuning-task-panel--stack">
+                    <section className="bf-gui-box">
+                      <div className="bf-gui-box__titlebar">
+                        <strong>Filters</strong>
+                      </div>
+                      <div className="bf-gui-box__body">
+                        <div className="switch-exercise-card__header">
+                          <div>
+                            <strong>Axis bandwidth and smoothing</strong>
+                            <p>Target, error, and D-term filter frequencies are exposed as one grouped filter pass instead of a raw parameter list.</p>
+                          </div>
+                          <StatusBadge tone={toneForScopedDraftReview(tuningFilterStagedDrafts.length, tuningFilterInvalidDrafts.length)}>
+                            {tuningFilterParameters.length} filters
+                          </StatusBadge>
+                        </div>
+
+                        <div className="tuning-axis-grid">
+                          {tuningFilterAxisGroups.map((group) => (
+                            <article key={`tuning-filter-axis:${group.id}`} className="tuning-axis-card">
+                              <div className="tuning-axis-card__header">
+                                <strong>{group.label}</strong>
+                                <span>{group.parameters.length} filters</span>
+                              </div>
+                              <div className="tuning-control-grid tuning-control-grid--compact">
+                                {group.parameters.map((parameter) => renderTuningControl(parameter))}
+                              </div>
+                            </article>
+                          ))}
+                        </div>
+
+                        <ul className="output-note-list">
+                          <li>Higher filter frequencies preserve response but pass more noise. Lower values smooth noise at the cost of latency.</li>
+                          <li>Zero values are valid for some ArduPilot filter parameters and can intentionally disable a filter path.</li>
+                          <li>Change filters carefully and listen for noise or oscillation before moving on to more aggressive gain changes.</li>
+                        </ul>
+                      </div>
+                    </section>
+                  </div>
+                ) : null}
+
+                {activeTuningTaskId === 'profiles' ? (
+                  <div className="tuning-task-panel tuning-task-panel--stack">
+                    {tuningProfileNotice ? (
+                      <div className="parameter-review__notice">
+                        <StatusBadge tone={tuningProfileNotice.tone}>{tuningProfileNotice.tone}</StatusBadge>
+                        <p>{tuningProfileNotice.text}</p>
+                      </div>
+                    ) : null}
+
+                    {tuningProfileStorageNotice ? (
+                      <div className="parameter-review__notice">
+                        <StatusBadge tone={tuningProfileStorageNotice.tone}>{tuningProfileStorageNotice.tone}</StatusBadge>
+                        <p>{tuningProfileStorageNotice.text}</p>
+                      </div>
+                    ) : null}
+
+                    <section className="bf-gui-box">
+                      <div className="bf-gui-box__titlebar">
+                        <strong>Tuning Profiles</strong>
+                      </div>
+                      <div className="bf-gui-box__body">
+                        <div className="switch-exercise-card__header">
+                          <div>
+                            <strong>Save known-good tunes</strong>
+                            <p>Capture the live or staged tune into a reusable local profile, then restage it later through the same verified review path.</p>
+                          </div>
+                          <StatusBadge tone={savedTuningProfiles.length > 0 ? 'success' : 'neutral'}>
+                            {savedTuningProfiles.length > 0 ? `${savedTuningProfiles.length} saved` : 'empty'}
+                          </StatusBadge>
+                        </div>
+
+                        <div className="snapshots-form-grid">
+                          <label className="snapshots-field">
+                            <span>Profile Label</span>
+                            <input
+                              data-testid="tuning-profile-label-input"
+                              type="text"
+                              value={tuningProfileLabelInput}
+                              onChange={(event) => setTuningProfileLabelInput(event.target.value)}
+                              placeholder="5-inch baseline"
+                            />
+                            <small>Short, build-specific name for the saved tune.</small>
+                          </label>
+
+                          <label className="snapshots-field">
+                            <span>Source</span>
+                            <select
+                              data-testid="tuning-profile-source-select"
+                              value={tuningProfileSourceInput}
+                              onChange={(event) => setTuningProfileSourceInput(event.target.value as TuningProfileSourceMode)}
+                            >
+                              <option value="staged">Current staged tune</option>
+                              <option value="live">Current live controller tune</option>
+                            </select>
+                            <small>
+                              {tuningProfileSourceUsesStaged
+                                ? 'Captures the current staged tuning drafts on top of the live baseline.'
+                                : 'Captures the controller’s currently synced live tuning values.'}
+                            </small>
+                          </label>
+
+                          <label className="snapshots-field snapshots-field--wide">
+                            <span>Note</span>
+                            <textarea
+                              data-testid="tuning-profile-note-input"
+                              value={tuningProfileNoteInput}
+                              onChange={(event) => setTuningProfileNoteInput(event.target.value)}
+                              placeholder="Quiet freestyle tune for ducted builds, captured after the first clean hover pass."
+                            />
+                            <small>Keep notes concise so the saved profile remains easy to scan in the browser library.</small>
+                          </label>
+
+                          <label className="snapshots-setting-row snapshots-field--wide">
+                            <input
+                              type="checkbox"
+                              checked={tuningProfileProtectedInput}
+                              onChange={(event) => setTuningProfileProtectedInput(event.target.checked)}
+                            />
+                            <span>
+                              <strong>Protect this profile from deletion</strong>
+                              <small>Use protection for known-good baselines you do not want removed accidentally from the local browser library.</small>
+                            </span>
+                          </label>
+                        </div>
+
+                        <div className="switch-exercise-controls">
+                          <button
+                            type="button"
+                            data-testid="create-tuning-profile-button"
+                            style={buttonStyle('primary')}
+                            onClick={handleCreateTuningProfile}
+                            disabled={!canCreateTuningProfile}
+                          >
+                            Create Tuning Profile
+                          </button>
+                        </div>
+                      </div>
+                    </section>
+
+                    <div className="tuning-profile-browser">
+                      <div className="tuning-profile-browser__rail">
+                        <div className="tuning-profile-browser__header">
+                          <div>
+                            <strong>Saved profiles</strong>
+                            <p>Pick a known-good tune to diff or restage.</p>
+                          </div>
+                          <StatusBadge tone="neutral">{savedTuningProfiles.length}</StatusBadge>
+                        </div>
+
+                        {savedTuningProfiles.length > 0 ? (
+                          <div className="snapshot-library-grid">
+                            {savedTuningProfiles.map((savedProfile) => {
+                              const isActive = savedProfile.id === selectedTuningProfile?.id
+                              return (
+                                <button
+                                  key={savedProfile.id}
+                                  type="button"
+                                  data-testid={`tuning-profile-card-${savedProfile.id}`}
+                                  className={`snapshot-card${isActive ? ' is-active' : ''}`}
+                                  onClick={() => setSelectedTuningProfileId(savedProfile.id)}
+                                >
+                                  <div className="snapshot-card__header">
+                                    <div>
+                                      <strong>{savedProfile.label}</strong>
+                                      <small>{formatSnapshotTimestamp(savedProfile.createdAt)}</small>
+                                    </div>
+                                    <StatusBadge tone={isActive ? 'warning' : 'neutral'}>
+                                      {savedProfile.source === 'staged' ? 'staged' : 'live'}
+                                    </StatusBadge>
+                                  </div>
+                                  <div className="config-pills">
+                                    <span>{savedProfile.backup.parameterCount} params</span>
+                                    {savedProfile.protected ? <span className="is-target">protected</span> : null}
+                                  </div>
+                                  {savedProfile.note ? <small className="snapshot-card__note">{savedProfile.note}</small> : null}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        ) : (
+                          <div className="snapshots-empty-state tuning-profile-empty">
+                            <h4>No tuning profiles yet</h4>
+                            <p>Save the current live or staged tune here before experimenting with more aggressive rate, PID, or filter changes.</p>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="tuning-profile-browser__detail">
+                        {selectedTuningProfile ? (
+                          <div className="snapshot-selected">
+                            <div className="telemetry-header">
+                              <div>
+                                <h3>{selectedTuningProfile.label}</h3>
+                                <p>
+                                  {selectedTuningProfile.source === 'staged'
+                                    ? 'Built from a staged tune so it can be reapplied later through the normal tuning review flow.'
+                                    : 'Built directly from the synced live controller tune.'}
+                                </p>
+                              </div>
+                              <div className="preset-selected__badges">
+                                <StatusBadge tone="neutral">{selectedTuningProfile.backup.parameterCount} params</StatusBadge>
+                                <StatusBadge tone={selectedTuningProfile.protected ? 'success' : 'neutral'}>
+                                  {selectedTuningProfile.protected ? 'protected' : 'editable'}
+                                </StatusBadge>
+                              </div>
+                            </div>
+
+                            <div className="telemetry-metric-grid">
+                              <article className="telemetry-metric-card">
+                                <span>Changed on live</span>
+                                <strong>{selectedTuningProfileChangedEntries.length}</strong>
+                              </article>
+                              <article className="telemetry-metric-card">
+                                <span>Already matched</span>
+                                <strong>{selectedTuningProfileDiffEntries.length - selectedTuningProfileChangedEntries.length - selectedTuningProfileInvalidEntries.length}</strong>
+                              </article>
+                              <article className="telemetry-metric-card">
+                                <span>Invalid on live</span>
+                                <strong>{selectedTuningProfileInvalidEntries.length}</strong>
+                              </article>
+                              <article className="telemetry-metric-card">
+                                <span>Source</span>
+                                <strong>{selectedTuningProfile.source === 'staged' ? 'Staged' : 'Live'}</strong>
+                              </article>
+                            </div>
+
+                            {selectedTuningProfile.note ? <p className="snapshot-selected__note">{selectedTuningProfile.note}</p> : null}
+
+                            {selectedTuningProfileChangedEntries.length > 0 ? (
+                              <div className="parameter-diff-grid">
+                                {selectedTuningProfileDiffGroups.map((group) => (
+                                  <section key={`tuning-profile-group:${group.category}`} className="parameter-diff-group">
+                                    <header>
+                                      <strong>{formatCategoryLabel(group.category)}</strong>
+                                      <span>{group.entries.length} changed</span>
+                                    </header>
+
+                                    {group.entries.map((draft) => (
+                                      <div key={`tuning-profile-diff:${draft.id}`} className="parameter-diff-item">
+                                        <span>
+                                          <strong>{draft.id}</strong>
+                                          <small>{draft.label}</small>
+                                        </span>
+                                        <span className="parameter-diff-values">
+                                          {formatParameterValue(draft.currentValue, draft.definition?.unit)} to{' '}
+                                          {formatParameterValue(draft.nextValue, draft.definition?.unit)}
+                                        </span>
+                                        <span className="parameter-diff-delta">{formatParameterDelta(draft.delta, draft.definition?.unit)}</span>
+                                      </div>
+                                    ))}
+                                  </section>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="success-copy">This tuning profile already matches the current live controller values.</p>
+                            )}
+
+                            {selectedTuningProfileInvalidEntries.length > 0 ? (
+                              <div className="parameter-follow-up parameter-follow-up--warning">
+                                <StatusBadge tone="warning">invalid</StatusBadge>
+                                <p>
+                                  {selectedTuningProfileInvalidEntries.length} saved tuning value(s) are no longer valid against the current live
+                                  metadata bounds.
+                                </p>
+                              </div>
+                            ) : null}
+
+                            <div className="switch-exercise-controls">
+                              <button
+                                type="button"
+                                data-testid="stage-selected-tuning-profile-button"
+                                style={buttonStyle('primary')}
+                                onClick={handleStageSelectedTuningProfile}
+                                disabled={!selectedTuningProfile || selectedTuningProfileChangedEntries.length === 0 || selectedTuningProfileInvalidEntries.length > 0}
+                              >
+                                Stage Selected Profile
+                              </button>
+                              <button
+                                type="button"
+                                style={buttonStyle('secondary')}
+                                onClick={handleToggleSelectedTuningProfileProtection}
+                                disabled={!selectedTuningProfile}
+                              >
+                                {selectedTuningProfile.protected ? 'Unprotect Profile' : 'Protect Profile'}
+                              </button>
+                              <button
+                                type="button"
+                                style={buttonStyle()}
+                                onClick={handleDeleteSelectedTuningProfile}
+                                disabled={!selectedTuningProfile}
+                              >
+                                Delete Profile
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="snapshots-empty-state tuning-profile-empty">
+                            <h4>No profile selected</h4>
+                            <p>Create or choose a saved tuning profile to diff it against the current live controller tune.</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {activeTuningTaskId === 'review' ? (
+                  <div className="tuning-task-panel tuning-task-panel--stack">
+                    <div className="scoped-review-card">
+                      <div className="switch-exercise-card__header">
+                        <div>
+                          <strong>Tuning changes in review</strong>
+                          <p>All staged rates, gains, and filters stay grouped here before they are written to the controller.</p>
+                        </div>
+                        <StatusBadge tone={toneForScopedDraftReview(tuningStagedDrafts.length, tuningInvalidDrafts.length)}>
+                          {tuningInvalidDrafts.length > 0
+                            ? `${tuningInvalidDrafts.length} invalid`
+                            : tuningStagedDrafts.length > 0
+                              ? `${tuningStagedDrafts.length} staged`
+                              : 'in sync'}
+                        </StatusBadge>
+                      </div>
+
+                      {tuningDraftEntries.length > 0 ? (
+                        <div className="scoped-draft-list">
+                          {tuningDraftEntries.map((draft) => (
+                            <article key={draft.id} className={`scoped-draft-item scoped-draft-item--${draft.status}`}>
+                              <div className="scoped-draft-item__header">
+                                <strong>{draft.label}</strong>
+                                <StatusBadge tone={toneForParameterDraftStatus(draft.status)}>{draft.status}</StatusBadge>
+                              </div>
+                              <p>{draft.id}</p>
+                              <small>
+                                {draft.status === 'staged'
+                                  ? `${formatParameterValue(draft.currentValue, draft.definition?.unit)} to ${formatParameterValue(
+                                      draft.nextValue,
+                                      draft.definition?.unit
+                                    )}`
+                                  : draft.reason ?? 'Draft matches the live controller value.'}
+                              </small>
+                            </article>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="success-copy">No tuning changes are staged right now.</p>
+                      )}
+
+                      <div className="switch-exercise-controls">
+                        <button
+                          data-testid="apply-tuning-changes-button"
+                          style={buttonStyle('primary')}
+                          onClick={() => void handleApplyScopedParameterDrafts(tuningDraftEntries, 'tuning:apply', 'Tuning')}
+                          disabled={
+                            busyAction !== undefined ||
+                            tuningStagedDrafts.length === 0 ||
+                            tuningInvalidDrafts.length > 0 ||
+                            !canApplyDraftParameters
+                          }
+                        >
+                          {busyAction === 'tuning:apply' ? 'Applying…' : `Apply Tuning Changes (${tuningStagedDrafts.length})`}
+                        </button>
+                        <button
+                          style={buttonStyle()}
+                          onClick={() => handleDiscardScopedParameterDrafts(tuningDraftEntries.map((entry) => entry.id), 'tuning')}
+                          disabled={busyAction !== undefined || tuningDraftEntries.length === 0}
+                        >
+                          Discard Tuning Changes
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="tuning-workspace__overview tuning-overview">
+                <div className="tuning-overview__sticky">
+                  <div className="telemetry-header">
+                    <div>
+                      <h3>Tuning overview</h3>
+                      <p>Keep the live mode, current curves, and staged change count visible while you work through rates, gains, and filters.</p>
+                    </div>
+                    <StatusBadge tone={toneForScopedDraftReview(tuningStagedDrafts.length, tuningInvalidDrafts.length)}>
+                      {tuningInvalidDrafts.length > 0
+                        ? `${tuningInvalidDrafts.length} invalid`
+                        : tuningStagedDrafts.length > 0
+                          ? `${tuningStagedDrafts.length} staged`
+                          : 'in sync'}
+                    </StatusBadge>
+                  </div>
+
+                  <div className="telemetry-metric-grid">
+                    <article className="telemetry-metric-card">
+                      <span>Live mode</span>
+                      <strong>{snapshot.vehicle?.flightMode ?? 'Unknown'}</strong>
+                    </article>
+                    <article className="telemetry-metric-card">
+                      <span>Session</span>
+                      <strong>{snapshot.sessionProfile === 'usb-bench' ? 'USB bench' : 'Full power'}</strong>
+                    </article>
+                    <article className="telemetry-metric-card">
+                      <span>Staged changes</span>
+                      <strong>{tuningStagedDrafts.length}</strong>
+                    </article>
+                    <article className="telemetry-metric-card">
+                      <span>Saved profiles</span>
+                      <strong>{savedTuningProfiles.length}</strong>
+                    </article>
+                  </div>
+
+                  <div className="config-pills">
+                    <span>{TUNING_RATE_PARAM_IDS.length} rate controls</span>
+                    <span>{TUNING_ALL_PID_PARAM_IDS.length} PID terms</span>
+                    <span>{TUNING_FILTER_PARAM_IDS.length} filters</span>
+                    <span>{tuningAdvancedPidParameters.length} advanced exposed</span>
+                    <span>{snapshot.liveVerification.rcInput.verified ? 'RC link verified' : 'RC telemetry pending'}</span>
+                  </div>
+
+                  <div className="scoped-review-card scoped-review-card--compact">
+                    <div className="switch-exercise-card__header">
+                      <div>
+                        <strong>Rate preview</strong>
+                        <p>Roll/pitch and yaw curves update immediately from the staged rate and expo values.</p>
+                      </div>
+                      <StatusBadge tone="neutral">live preview</StatusBadge>
+                    </div>
+
+                    <div className="tuning-curve-grid">
+                      <RateCurveGraph
+                        maxRate={Number(editedValues['ACRO_RP_RATE'] ?? readParameterValue(snapshot, 'ACRO_RP_RATE') ?? 360)}
+                        expo={Number(editedValues['ACRO_RP_EXPO'] ?? readParameterValue(snapshot, 'ACRO_RP_EXPO') ?? 0)}
+                        label="Roll / Pitch"
+                      />
+                      <RateCurveGraph
+                        maxRate={Number(editedValues['ACRO_Y_RATE'] ?? readParameterValue(snapshot, 'ACRO_Y_RATE') ?? 180)}
+                        expo={Number(editedValues['ACRO_Y_EXPO'] ?? readParameterValue(snapshot, 'ACRO_Y_EXPO') ?? 0)}
+                        label="Yaw"
+                        color="#dab254"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="scoped-review-card scoped-review-card--compact">
+                    <div className="switch-exercise-card__header">
+                      <div>
+                        <strong>Controller snapshot</strong>
+                        <p>Current live gains and filter ceilings for each axis, based on the controller values or staged drafts above them.</p>
+                      </div>
+                      <StatusBadge tone="neutral">axis view</StatusBadge>
+                    </div>
+
+                    <div className="tuning-axis-snapshot-grid">
+                      {tuningPidAxisGroups.map((group, index) => {
+                        const filterGroup = tuningFilterAxisGroups[index]
+                        const advancedGroup = tuningAdvancedPidAxisGroups[index]
+                        return (
+                          <article key={`tuning-axis-snapshot:${group.id}`} className="tuning-axis-snapshot">
+                            <div className="tuning-axis-card__header">
+                              <strong>{group.label}</strong>
+                              <span>
+                                {group.parameters.length + (filterGroup?.parameters.length ?? 0) + (advancedGroup?.parameters.length ?? 0)} values
+                              </span>
+                            </div>
+                            <div className="config-pills">
+                              {group.parameters.map((parameter) => (
+                                <span key={`snapshot-pid:${group.id}:${parameter.id}`}>
+                                  {(parameter.definition?.label
+                                    ? parameter.definition.label
+                                        .replace(`${group.label} `, '')
+                                        .replace(' Gain', '')
+                                        .replace('Feedforward', 'FF')
+                                    : parameter.id)}
+                                  :{' '}
+                                  {formatTuningDisplayValue(parameter, parameterDraftById.get(parameter.id)?.nextValue ?? parameter.value)}
+                                </span>
+                              ))}
+                            </div>
+                            {filterGroup ? (
+                              <div className="config-pills">
+                                {filterGroup.parameters.map((parameter) => (
+                                  <span key={`snapshot-filter:${group.id}:${parameter.id}`}>
+                                    {(parameter.definition?.label ? parameter.definition.label.replace(`${group.label} `, '') : parameter.id)}:{' '}
+                                    {formatTuningDisplayValue(parameter, parameterDraftById.get(parameter.id)?.nextValue ?? parameter.value)}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
+                            {advancedGroup && advancedGroup.parameters.length > 0 ? (
+                              <div className="config-pills">
+                                {advancedGroup.parameters.map((parameter) => (
+                                  <span key={`snapshot-advanced:${group.id}:${parameter.id}`}>
+                                    {(parameter.definition?.label ? parameter.definition.label.replace(`${group.label} `, '') : parameter.id)}:{' '}
+                                    {formatTuningDisplayValue(parameter, parameterDraftById.get(parameter.id)?.nextValue ?? parameter.value)}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
+                          </article>
+                        )
+                      })}
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
-
-            <p className="telemetry-note">
-              This view is intentionally limited to high-value flight-feel and rate/expo controls. It is designed to be easy to expand later without
-              turning the app into a full raw-tuning surface by default.
-            </p>
           </div>
         </Panel>
       </section>

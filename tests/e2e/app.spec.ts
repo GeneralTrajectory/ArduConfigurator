@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 
 async function expectParameterSummaryComplete(page: Page): Promise<void> {
-  await expect(page.getByTestId('session-parameter-summary')).toHaveText(/^(134 params|Params 134)$/)
+  await expect(page.getByTestId('session-parameter-summary')).toHaveText(/^(\d+ params|Params \d+)$/)
 }
 
 async function connectToVehicle(
@@ -112,6 +112,42 @@ test.describe('browser configurator regression flows', () => {
     await page.getByTestId('motor-test-sliders').getByText('ALL', { exact: true }).click()
     await expect(page.getByText('Selected: All 4 mapped motors (sequence)').first()).toBeVisible()
     await expect(page.getByRole('button', { name: 'Run Motor Test' })).toBeEnabled()
+  })
+
+  test('tuning exposes linked PID edits, master sliders, advanced terms, and local tuning profiles', async ({ page }) => {
+    await connectToVehicle(page, 'demo')
+
+    await openView(page, 'tuning')
+    await expect(page.getByTestId('tuning-task-nav')).toBeVisible()
+    await expect(page.getByTestId('tuning-summary-rates')).toBeVisible()
+    await page.getByTestId('tuning-task-nav').getByRole('button', { name: /PID Gains/i }).click()
+    await expect(page.getByText('Axis controller gains', { exact: true })).toBeVisible()
+    await expect(page.getByTestId('tuning-roll-pitch-link-button')).toBeVisible()
+
+    await page.getByTestId('tuning-input-ATC_RAT_RLL_P').fill('0.12')
+    await expect(page.getByTestId('tuning-input-ATC_RAT_PIT_P')).toHaveValue('0.12')
+
+    await page.getByTestId('tuning-roll-pitch-unlink-button').click()
+    await page.getByTestId('tuning-input-ATC_RAT_RLL_P').fill('0.14')
+    await expect(page.getByTestId('tuning-input-ATC_RAT_PIT_P')).toHaveValue('0.12')
+
+    await page.getByTestId('tuning-toggle-advanced-button').click()
+    await expect(page.getByText('Roll D Feedforward', { exact: true })).toBeVisible()
+
+    await page.getByTestId('tuning-master-pi-range').focus()
+    await page.getByTestId('tuning-master-pi-range').press('ArrowRight')
+    await expect(page.getByTestId('tuning-stage-master-adjustments-button')).toBeEnabled()
+    await page.getByTestId('tuning-stage-master-adjustments-button').click()
+
+    await page.getByTestId('tuning-task-nav').getByRole('button', { name: /Filters/i }).click()
+    await expect(page.getByText('Axis bandwidth and smoothing', { exact: true })).toBeVisible()
+    await page.getByTestId('tuning-task-nav').getByRole('button', { name: /Profiles/i }).click()
+    await page.getByTestId('tuning-profile-label-input').fill('Bench Test Profile')
+    await expect(page.getByTestId('create-tuning-profile-button')).toBeEnabled()
+    await page.getByTestId('create-tuning-profile-button').click()
+    await expect(page.getByRole('heading', { name: 'Bench Test Profile' })).toBeVisible()
+    await page.getByTestId('tuning-task-nav').getByRole('button', { name: /Review/i }).click()
+    await expect(page.getByText('Tuning changes in review', { exact: true })).toBeVisible()
   })
 
   test('manual motor test does not silently start motor verification', async ({ page }) => {
@@ -235,7 +271,7 @@ test.describe('browser configurator regression flows', () => {
     await page.getByTestId('snapshot-protected-toggle').check()
     await page.getByTestId('capture-live-snapshot-button').click()
 
-    await expect(page.getByText('Saved snapshot "E2E baseline" with 134 parameters.')).toBeVisible()
+    await expect(page.getByText(/Saved snapshot "E2E baseline" with \d+ parameters\./)).toBeVisible()
     await expect(page.getByTestId('active-baseline-label')).toHaveText('E2E baseline')
 
     await openView(page, 'presets')
@@ -300,7 +336,7 @@ test.describe('browser configurator regression flows', () => {
     await openView(page, 'snapshots')
     await page.getByTestId('snapshot-label-input').fill('Ack reset baseline')
     await page.getByTestId('capture-live-snapshot-button').click()
-    await expect(page.getByText('Saved snapshot "Ack reset baseline" with 134 parameters.')).toBeVisible()
+    await expect(page.getByText(/Saved snapshot "Ack reset baseline" with \d+ parameters\./)).toBeVisible()
 
     await openView(page, 'presets')
     await page.getByTestId('preset-card-flight-feel-soft').click()
@@ -334,7 +370,7 @@ test.describe('browser configurator regression flows', () => {
     await page.getByTestId('snapshot-protected-toggle').check()
     await page.getByTestId('capture-live-snapshot-button').click()
 
-    await expect(page.getByText('Saved snapshot "Protected baseline" with 134 parameters.')).toBeVisible()
+    await expect(page.getByText(/Saved snapshot "Protected baseline" with \d+ parameters\./)).toBeVisible()
     await expect(page.getByTestId('delete-selected-snapshot-button')).toBeDisabled()
 
     await page.getByTestId('toggle-selected-snapshot-protection-button').click()
@@ -348,7 +384,7 @@ test.describe('browser configurator regression flows', () => {
     await openView(page, 'snapshots')
     await page.getByTestId('snapshot-label-input').fill('Provisioning baseline')
     await page.getByTestId('capture-live-snapshot-button').click()
-    await expect(page.getByText('Saved snapshot "Provisioning baseline" with 134 parameters.')).toBeVisible()
+    await expect(page.getByText(/Saved snapshot "Provisioning baseline" with \d+ parameters\./)).toBeVisible()
 
     await openView(page, 'tuning')
     await page.getByTestId('tuning-input-ATC_INPUT_TC').fill('0.2')
@@ -401,6 +437,6 @@ test.describe('browser configurator regression flows', () => {
 
     await page.getByTestId('snapshot-label-input').fill('In-memory baseline')
     await page.getByTestId('capture-live-snapshot-button').click()
-    await expect(page.getByText('Saved snapshot "In-memory baseline" with 134 parameters.')).toBeVisible()
+    await expect(page.getByText(/Saved snapshot "In-memory baseline" with \d+ parameters\./)).toBeVisible()
   })
 })

@@ -121,6 +121,7 @@ import { Panel, StatusBadge, buttonStyle } from '@arduconfig/ui-kit'
 
 import { getDesktopBridge } from './desktop-bridge'
 import { AccelerometerPoseGuide, type AccelerometerPoseId } from './accelerometer-pose-guide'
+import { trackAppEvent, trackViewPageview } from './analytics'
 import { FlightDeckPreview } from './flight-deck-preview'
 import { LiveGpsMapCard } from './live-gps-map'
 import { RcChannelBars } from './rc-channel-bars'
@@ -2901,6 +2902,8 @@ export function App() {
   )
   const previousModeSwitchRef = useRef<{ slot?: number; pwm?: number }>({})
   const serialAutoReconnectAttemptedRef = useRef(false)
+  const previousConnectionKindRef = useRef(snapshot.connection.kind)
+  const previousGuidedSectionRef = useRef<string>()
   const boardCatalogEntry = useMemo(() => findBoardCatalogEntry(snapshot.hardware.board?.boardType), [snapshot.hardware.board?.boardType])
   const rcChannelDisplays = buildRcChannelDisplays(snapshot)
   const airframe = deriveArducopterAirframe(snapshot)
@@ -3127,6 +3130,44 @@ export function App() {
     setParameterFollowUp(undefined)
     setSetupConfirmations({})
   }, [runtime])
+
+  useEffect(() => {
+    trackViewPageview(activeViewId)
+    trackAppEvent('View Opened', {
+      view: activeViewId,
+      connection: snapshot.connection.kind
+    })
+  }, [activeViewId, snapshot.connection.kind])
+
+  useEffect(() => {
+    if (activeViewId !== 'setup' || setupMode !== 'wizard' || !selectedSetupSectionId) {
+      previousGuidedSectionRef.current = undefined
+      return
+    }
+
+    if (previousGuidedSectionRef.current === selectedSetupSectionId) {
+      return
+    }
+
+    previousGuidedSectionRef.current = selectedSetupSectionId
+    trackAppEvent('Guided Setup Step Viewed', {
+      step: selectedSetupSectionId
+    })
+  }, [activeViewId, selectedSetupSectionId, setupMode])
+
+  useEffect(() => {
+    const previousKind = previousConnectionKindRef.current
+    const nextKind = snapshot.connection.kind
+
+    if (previousKind !== nextKind && nextKind === 'connected') {
+      trackAppEvent('Connection Established', {
+        transport: transportMode,
+        sessionProfile
+      })
+    }
+
+    previousConnectionKindRef.current = nextKind
+  }, [sessionProfile, snapshot.connection.kind, transportMode])
 
   useEffect(() => {
     if (snapshot.connection.kind === 'connected' && snapshot.vehicle !== undefined) {
@@ -5037,6 +5078,10 @@ export function App() {
       tone: 'success',
       text: `Saved snapshot "${savedSnapshot.label}" with ${backup.parameterCount} parameters.`
     })
+    trackAppEvent('Snapshot Captured', {
+      parameterCount: backup.parameterCount,
+      protected: snapshotProtectedInput
+    })
   }
 
   function handleOpenSnapshotImport(): void {
@@ -5246,6 +5291,12 @@ export function App() {
       tone: 'success',
       text: `Saved provisioning profile "${profile.label}" with ${profile.baseBackup.parameterCount} base parameters and ${profile.overlayParameters.length} overlay parameter(s).`
     })
+    trackAppEvent('Provisioning Profile Created', {
+      source: sourceMode,
+      baseParameterCount: profile.baseBackup.parameterCount,
+      overlayParameterCount: profile.overlayParameters.length,
+      checklistCount: profile.validationChecklist.length
+    })
   }
 
   function handleExportProvisioningLibrary(): void {
@@ -5351,6 +5402,9 @@ export function App() {
       `Provisioning profile: ${selectedProvisioningProfile.label}`
     )
     setProvisioningRestoreAcknowledged(false)
+    trackAppEvent('Provisioning Profile Applied', {
+      changedCount: selectedProvisioningProfileDiffEntries.length
+    })
   }
 
   function handleDeleteSelectedSnapshot(): void {
@@ -5430,6 +5484,9 @@ export function App() {
 
     await handleApplyScopedParameterDrafts(selectedSnapshotDiffEntries, 'snapshots:apply', `Snapshot restore: ${selectedSnapshot.label}`)
     setSnapshotRestoreAcknowledged(false)
+    trackAppEvent('Snapshot Restore Applied', {
+      changedCount: selectedSnapshotDiffEntries.length
+    })
   }
 
   function handleStageSelectedPresetDiff(): void {

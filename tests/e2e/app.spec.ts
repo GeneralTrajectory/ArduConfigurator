@@ -88,8 +88,12 @@ test.describe('browser configurator regression flows', () => {
     await connectToVehicle(page, 'demo')
 
     await openView(page, 'outputs')
-    await expect(page.getByText('Motor Setup', { exact: true })).toBeVisible()
+    await expect(page.getByTestId('outputs-task-nav')).toBeVisible()
+    await expect(page.getByTestId('outputs-summary-motor-setup')).toBeVisible()
+    await page.getByTestId('outputs-task-nav').getByRole('button', { name: /Direction & Test/i }).click()
     await expect(page.getByText('Motor Direction Check', { exact: true })).toBeVisible()
+    await page.getByTestId('outputs-task-nav').getByRole('button', { name: /Motor Setup/i }).click()
+    await expect(page.getByRole('button', { name: 'Reorder Motor Outputs' })).toBeVisible()
 
     await page.getByRole('button', { name: 'Reorder Motor Outputs' }).click()
     await expect(page.getByRole('dialog')).toBeVisible()

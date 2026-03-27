@@ -94,6 +94,21 @@ const RC_CENTER_TOLERANCE_RATIO = 0.1
 const RC_CENTER_TOLERANCE_US = 45
 const RC_MAPPING_DELTA_THRESHOLD_US = 120
 const RC_MAPPING_DOMINANCE_MARGIN_US = 35
+const RC_MAPPING_CENTER_BASELINE_MIN_US = 1300
+const RC_MAPPING_CENTER_BASELINE_MAX_US = 1700
+const RC_MAPPING_THROTTLE_BASELINE_MAX_US = 1200
+
+function rcMappingCandidateMatchesTargetAxis(candidate: RcMappingCandidate, targetAxis: RcAxisId | undefined): boolean {
+  if (targetAxis === undefined) {
+    return true
+  }
+
+  if (targetAxis === 'throttle') {
+    return candidate.baselinePwm <= RC_MAPPING_THROTTLE_BASELINE_MAX_US && candidate.livePwm > candidate.baselinePwm
+  }
+
+  return candidate.baselinePwm >= RC_MAPPING_CENTER_BASELINE_MIN_US && candidate.baselinePwm <= RC_MAPPING_CENTER_BASELINE_MAX_US
+}
 
 export function deriveModeAssignments(snapshot: ConfiguratorSnapshot): ModeAssignment[] {
   const assignments: ModeAssignment[] = []
@@ -369,6 +384,7 @@ export function detectDominantRcChannelChange(
     excludedChannelNumbers?: number[]
     minimumDeltaUs?: number
     dominanceMarginUs?: number
+    targetAxis?: RcAxisId
   } = {}
 ): RcMappingCandidate | undefined {
   const excluded = new Set(options.excludedChannelNumbers ?? [])
@@ -391,6 +407,7 @@ export function detectDominantRcChannelChange(
       }
     })
     .filter((candidate): candidate is RcMappingCandidate => candidate !== undefined)
+    .filter((candidate) => rcMappingCandidateMatchesTargetAxis(candidate, options.targetAxis))
     .sort((left, right) => right.deltaUs - left.deltaUs)
 
   const strongest = candidates[0]

@@ -41,6 +41,21 @@ test('detectDominantRcChannelChange finds the strongest unexcluded RC channel', 
   assert.equal(nextStrongest?.channelNumber, 2)
 })
 
+test('detectDominantRcChannelChange rejects throttle-like movement during roll capture', () => {
+  const baseline = [1500, 1500, 1000, 1500]
+  const channels = [1500, 1500, 1710, 1500]
+
+  const rollCandidate = detectDominantRcChannelChange(channels, baseline, {
+    targetAxis: 'roll'
+  })
+  assert.equal(rollCandidate, undefined)
+
+  const throttleCandidate = detectDominantRcChannelChange(channels, baseline, {
+    targetAxis: 'throttle'
+  })
+  assert.equal(throttleCandidate?.channelNumber, 3)
+})
+
 test('deriveRcMapDraftValues only stages changed RCMAP parameters', () => {
   const drafts = deriveRcMapDraftValues(
     {

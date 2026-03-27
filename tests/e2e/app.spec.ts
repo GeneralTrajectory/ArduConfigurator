@@ -186,8 +186,8 @@ test.describe('browser configurator regression flows', () => {
     await expect(page.getByText('Drag-and-drop editor pending')).toBeVisible()
 
     await openView(page, 'receiver')
-    await expect(page.getByText('Receiver status')).toBeVisible()
-    await expect(page.getByText('Receiver link & signal setup')).toBeVisible()
+    await expect(page.getByText('Live monitor')).toBeVisible()
+    await expect(page.getByTestId('receiver-task-nav')).toBeVisible()
 
     await openView(page, 'outputs')
     await expect(page.getByText('Output assignments', { exact: true })).toBeVisible()

@@ -4807,6 +4807,61 @@ textarea:focus {
   min-width: 0;
 }
 
+.receiver-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.receiver-summary-card {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(13, 18, 24, 0.98), rgba(9, 13, 17, 1));
+  text-align: left;
+  transition:
+    border-color 140ms ease,
+    transform 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.receiver-summary-card:hover {
+  border-color: rgba(183, 149, 93, 0.42);
+  transform: translateY(-1px);
+}
+
+.receiver-summary-card.is-active {
+  border-color: rgba(183, 149, 93, 0.72);
+  box-shadow:
+    inset 0 0 0 1px rgba(183, 149, 93, 0.14),
+    0 10px 24px rgba(0, 0, 0, 0.18);
+}
+
+.receiver-summary-card__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.receiver-summary-card__header span {
+  color: var(--text);
+  font-family: var(--font-data);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.receiver-summary-card p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
 .ports-toolbar {
   position: sticky;
   bottom: 16px;
@@ -4827,11 +4882,230 @@ textarea:focus {
   gap: 14px;
 }
 
+.receiver-workspace--task-deck {
+  grid-template-columns: minmax(320px, 0.88fr) minmax(0, 1.12fr);
+  align-items: start;
+}
+
 .receiver-workspace__live,
 .receiver-workspace__config {
   display: grid;
   align-content: start;
   gap: 10px;
+}
+
+.receiver-monitor__sticky {
+  position: sticky;
+  top: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.receiver-live-primary-grid,
+.receiver-monitor__meta,
+.receiver-task-two-up,
+.receiver-task-stage-strip {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.receiver-live-card,
+.receiver-task-stage,
+.receiver-inline-toggle,
+.receiver-review-dock {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+
+.receiver-live-card--mode {
+  border-color: rgba(127, 147, 166, 0.52);
+}
+
+.receiver-live-card--attention {
+  border-color: rgba(183, 149, 93, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(183, 149, 93, 0.12);
+}
+
+.receiver-live-card__header,
+.receiver-live-card__footer,
+.receiver-review-dock__actions,
+.receiver-review-dock__summary,
+.receiver-inline-toggle {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.receiver-live-card__header strong,
+.receiver-task-deck__header h3,
+.receiver-task-stage strong,
+.receiver-inline-toggle strong,
+.receiver-review-dock__summary strong {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.receiver-live-card__header span,
+.receiver-live-card__footer span,
+.receiver-task-stage span {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-family: var(--font-data);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.receiver-live-card p,
+.receiver-task-stage p,
+.receiver-task-deck__header p,
+.receiver-channel-disclosure p,
+.receiver-inline-toggle p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.receiver-task-stage.is-active {
+  border-color: rgba(183, 149, 93, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(183, 149, 93, 0.14);
+}
+
+.receiver-task-stage.is-complete {
+  border-color: rgba(111, 143, 120, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(111, 143, 120, 0.14);
+}
+
+.receiver-channel-disclosure {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: center;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: rgba(11, 16, 20, 0.84);
+}
+
+.receiver-channel-disclosure > div,
+.receiver-task-deck__header > div,
+.receiver-inline-toggle > div,
+.receiver-review-dock__summary {
+  min-width: 0;
+}
+
+.receiver-channel-disclosure strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text);
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.receiver-task-deck {
+  display: grid;
+  gap: 12px;
+}
+
+.receiver-task-deck__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 14px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(14, 18, 23, 0.98), rgba(10, 13, 17, 1));
+}
+
+.receiver-task-deck__header h3 {
+  font-size: 16px;
+}
+
+.receiver-task-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.receiver-task-nav__button {
+  display: grid;
+  gap: 3px;
+  min-width: 130px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: rgba(11, 15, 19, 0.92);
+  text-align: left;
+  color: var(--text);
+  transition:
+    border-color 140ms ease,
+    transform 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.receiver-task-nav__button:hover {
+  border-color: rgba(183, 149, 93, 0.42);
+  transform: translateY(-1px);
+}
+
+.receiver-task-nav__button.is-active {
+  border-color: rgba(183, 149, 93, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(183, 149, 93, 0.14);
+}
+
+.receiver-task-nav__button span {
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.receiver-task-nav__button small {
+  color: var(--text-muted);
+}
+
+.receiver-task-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.receiver-task-panel--stack {
+  align-content: start;
+}
+
+.receiver-inline-toggle {
+  align-items: center;
+}
+
+.receiver-inline-toggle--review {
+  background: rgba(11, 16, 20, 0.84);
+}
+
+.receiver-review-dock {
+  position: sticky;
+  bottom: 16px;
+  z-index: 3;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  background: rgba(16, 21, 27, 0.98);
+  box-shadow: 0 -10px 28px rgba(0, 0, 0, 0.26);
+}
+
+.receiver-review-dock__actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .rc-range-axis-grid {
@@ -6758,11 +7032,16 @@ textarea:focus {
   .flight-deck,
   .flight-deck-command,
   .receiver-workspace,
+  .receiver-summary-grid,
+  .receiver-live-primary-grid,
+  .receiver-monitor__meta,
   .ports-workspace,
   .outputs-workspace,
   .receiver-config-grid,
   .receiver-support-grid,
   .receiver-exercise-grid,
+  .receiver-task-two-up,
+  .receiver-task-stage-strip,
   .outputs-lab-grid {
     grid-template-columns: 1fr;
     display: grid;
@@ -6881,6 +7160,25 @@ textarea:focus {
 
   .accelerometer-pose-guide--compact {
     grid-template-columns: 1fr;
+  }
+
+  .receiver-monitor__sticky {
+    position: static;
+    top: auto;
+  }
+
+  .receiver-channel-disclosure,
+  .receiver-inline-toggle {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .receiver-review-dock {
+    grid-template-columns: 1fr;
+  }
+
+  .receiver-review-dock__actions {
+    justify-content: flex-start;
   }
 
   .accelerometer-pose-guide--compact .accelerometer-pose-guide__steps {

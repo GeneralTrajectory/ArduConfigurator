@@ -197,6 +197,7 @@ type ProductMode = 'basic' | 'expert'
 type SetupMode = 'overview' | 'wizard'
 type StatusTone = 'neutral' | 'success' | 'warning' | 'danger'
 type ModeSwitchExerciseStatus = 'idle' | 'running' | 'passed' | 'failed'
+type ReceiverTaskId = 'mapping' | 'endpoints' | 'flight-modes' | 'advanced' | 'review'
 
 const PRODUCT_MODE_STORAGE_KEY = 'arduconfig:product-mode'
 const TRANSPORT_MODE_STORAGE_KEY = 'arduconfig:transport-mode'
@@ -1024,6 +1025,24 @@ function deriveRcMappingLiveCandidates(
     .sort((left, right) => right.deltaUs - left.deltaUs)
 }
 
+function describeRcMappingRejectedCandidate(targetAxis: RcAxisId, candidate: RcMappingCandidate): string | undefined {
+  if (targetAxis === 'throttle') {
+    if (candidate.baselinePwm > 1200) {
+      return 'That movement still looks like a centered stick, not throttle. Start with throttle fully low, then raise only throttle.'
+    }
+    if (candidate.livePwm <= candidate.baselinePwm) {
+      return 'Throttle capture expects an upward movement from idle. Lower throttle first, then raise only throttle.'
+    }
+    return undefined
+  }
+
+  if (candidate.baselinePwm < 1300 || candidate.baselinePwm > 1700) {
+    return `That movement looks more like throttle or another switch channel, not ${formatRcAxisLabel(targetAxis).toLowerCase()}. Re-center the sticks, leave throttle low, and move only ${formatRcAxisLabel(targetAxis).toLowerCase()}.`
+  }
+
+  return undefined
+}
+
 function failRcMappingSessionState(current: RcMappingSessionState, reason: string): RcMappingSessionState {
   return {
     ...current,
@@ -1716,6 +1735,28 @@ function channelRole(channelNumber: number, modeChannelNumber: number | undefine
   }
 }
 
+function deriveAssignedRcOptionChannels(snapshot: ConfiguratorSnapshot): Map<number, string> {
+  const assignedChannels = new Map<number, string>()
+
+  for (let channelNumber = 5; channelNumber <= 16; channelNumber += 1) {
+    const optionValue = readRoundedParameter(snapshot, `RC${channelNumber}_OPTION`)
+    if (optionValue === undefined || optionValue === 0) {
+      continue
+    }
+
+    const label =
+      optionValue === 153
+        ? 'Arm / Disarm'
+        : optionValue === 154
+          ? 'Arm / Disarm + AirMode'
+          : 'Assigned switch'
+
+    assignedChannels.set(channelNumber, label)
+  }
+
+  return assignedChannels
+}
+
 function getModeChannelNumber(snapshot: ConfiguratorSnapshot): number | undefined {
   const configuredChannel = readRoundedParameter(snapshot, 'FLTMODE_CH') ?? readRoundedParameter(snapshot, 'MODE_CH') ?? 5
   return configuredChannel >= 1 && configuredChannel <= 16 ? configuredChannel : undefined
@@ -1723,8 +1764,11 @@ function getModeChannelNumber(snapshot: ConfiguratorSnapshot): number | undefine
 
 function buildRcChannelDisplays(snapshot: ConfiguratorSnapshot, visibleCount = 8): RcChannelDisplay[] {
   const modeChannelNumber = getModeChannelNumber(snapshot)
+  const assignedRcOptionChannels = deriveAssignedRcOptionChannels(snapshot)
+  const highestAssignedChannel = Math.max(0, ...assignedRcOptionChannels.keys())
+  const channelCount = Math.max(visibleCount, snapshot.liveVerification.rcInput.channelCount, modeChannelNumber ?? 0, highestAssignedChannel)
 
-  return Array.from({ length: visibleCount }, (_, index) => {
+  return Array.from({ length: channelCount }, (_, index) => {
     const channelNumber = index + 1
     const pwm = snapshot.liveVerification.rcInput.channels[index]
     const minimum = readParameterValue(snapshot, `RC${channelNumber}_MIN`) ?? 1000
@@ -1735,7 +1779,7 @@ function buildRcChannelDisplays(snapshot: ConfiguratorSnapshot, visibleCount = 8
 
     return {
       channelNumber,
-      role: channelRole(channelNumber, modeChannelNumber),
+      role: modeChannelNumber === channelNumber ? 'Mode switch' : assignedRcOptionChannels.get(channelNumber) ?? channelRole(channelNumber, modeChannelNumber),
       pwm: hasLivePwm ? pwm : undefined,
       fillPercent: hasLivePwm ? clamp01((pwm - minimum) / range) * 100 : 0,
       trimPercent: clamp01((trim - minimum) / range) * 100,
@@ -2450,6 +2494,9 @@ export function App() {
   const [rcMappingSession, setRcMappingSession] = useState<RcMappingSessionState>(createIdleRcMappingSessionState)
   const [rcMappingAutoCaptureState, setRcMappingAutoCaptureState] = useState<RcMappingAutoCaptureState>({ accumulatedMs: 0 })
   const [rcCalibrationSession, setRcCalibrationSession] = useState<RcCalibrationSessionState>(createIdleRcCalibrationSessionState)
+  const [receiverTaskOverride, setReceiverTaskOverride] = useState<ReceiverTaskId>()
+  const [showReceiverChannelDetails, setShowReceiverChannelDetails] = useState(false)
+  const [showReceiverMappingDiagnostics, setShowReceiverMappingDiagnostics] = useState(false)
   const [motorTestOutput, setMotorTestOutput] = useState<number>()
   const [motorTestThrottlePercent, setMotorTestThrottlePercent] = useState(7)
   const [motorTestDurationSeconds, setMotorTestDurationSeconds] = useState(1)
@@ -2499,6 +2546,27 @@ export function App() {
   const escSetup = deriveEscSetupSummary(snapshot)
   const currentRcAxisChannelMap = deriveRcAxisChannelMap(snapshot)
   const rcAxisObservations = deriveRcAxisObservations(snapshot)
+  const receiverPrimaryChannelNumbers = useMemo(() => {
+    const channelNumbers = new Set<number>(rcAxisObservations.map((axis) => axis.channelNumber))
+    for (let channelNumber = 5; channelNumber <= 16; channelNumber += 1) {
+      const optionValue = readRoundedParameter(snapshot, `RC${channelNumber}_OPTION`)
+      if (optionValue !== undefined && optionValue !== 0) {
+        channelNumbers.add(channelNumber)
+      }
+    }
+    if (modeSwitchEstimate.channelNumber !== undefined) {
+      channelNumbers.add(modeSwitchEstimate.channelNumber)
+    }
+    return channelNumbers
+  }, [modeSwitchEstimate.channelNumber, rcAxisObservations, snapshot])
+  const receiverPrimaryChannelDisplays = useMemo(
+    () => rcChannelDisplays.filter((channel) => receiverPrimaryChannelNumbers.has(channel.channelNumber)),
+    [rcChannelDisplays, receiverPrimaryChannelNumbers]
+  )
+  const receiverAuxChannelDisplays = useMemo(
+    () => rcChannelDisplays.filter((channel) => !receiverPrimaryChannelNumbers.has(channel.channelNumber)),
+    [rcChannelDisplays, receiverPrimaryChannelNumbers]
+  )
   const gpsAutoConfig = readRoundedParameter(snapshot, 'GPS_AUTO_CONFIG')
   const gpsAutoSwitch = readRoundedParameter(snapshot, 'GPS_AUTO_SWITCH')
   const gpsPrimary = readRoundedParameter(snapshot, 'GPS_PRIMARY')
@@ -2727,6 +2795,8 @@ export function App() {
       setPropsRemovedAcknowledged(false)
       setTestAreaAcknowledged(false)
       setParameterNotice(undefined)
+      setShowReceiverChannelDetails(false)
+      setShowReceiverMappingDiagnostics(false)
       return
     }
 
@@ -2753,6 +2823,15 @@ export function App() {
       pwm: modeSwitchEstimate.pwm
     }
   }, [snapshot.connection.kind, modeSwitchEstimate.estimatedSlot, modeSwitchEstimate.pwm])
+
+  useEffect(() => {
+    if (activeViewId === 'receiver') {
+      return
+    }
+
+    setReceiverTaskOverride(undefined)
+    setShowReceiverMappingDiagnostics(false)
+  }, [activeViewId])
 
   useEffect(() => {
     if (outputMapping.motorOutputs.length === 0) {
@@ -3101,13 +3180,23 @@ export function App() {
         .filter((channelNumber): channelNumber is number => channelNumber !== undefined),
     [rcMappingSession.captures]
   )
-  const rcMappingCandidate = useMemo(() => {
+  const rcMappingRawCandidate = useMemo(() => {
     if (rcMappingSession.status !== 'running' || rcMappingSession.currentTargetAxis === undefined) {
       return undefined
     }
 
     return detectDominantRcChannelChange(snapshot.liveVerification.rcInput.channels, rcMappingSession.baselineChannels, {
       excludedChannelNumbers: rcMappingExcludedChannelNumbers
+    })
+  }, [rcMappingExcludedChannelNumbers, rcMappingSession.baselineChannels, rcMappingSession.currentTargetAxis, rcMappingSession.status, snapshot.liveVerification.rcInput.channels])
+  const rcMappingCandidate = useMemo(() => {
+    if (rcMappingSession.status !== 'running' || rcMappingSession.currentTargetAxis === undefined) {
+      return undefined
+    }
+
+    return detectDominantRcChannelChange(snapshot.liveVerification.rcInput.channels, rcMappingSession.baselineChannels, {
+      excludedChannelNumbers: rcMappingExcludedChannelNumbers,
+      targetAxis: rcMappingSession.currentTargetAxis
     })
   }, [rcMappingExcludedChannelNumbers, rcMappingSession.baselineChannels, rcMappingSession.currentTargetAxis, rcMappingSession.status, snapshot.liveVerification.rcInput.channels])
   const rcMappingLiveCandidates = useMemo(() => {
@@ -3133,6 +3222,18 @@ export function App() {
   )
   const rcMappingTargetGuide = rcMappingTargetPrompt(rcMappingSession.currentTargetAxis ?? 'roll')
   const rcMappingCandidateConfidence = rcMappingConfidenceLabel(rcMappingCandidate?.deltaUs)
+  const rcMappingRejectedReason = useMemo(() => {
+    if (
+      rcMappingSession.status !== 'running' ||
+      rcMappingSession.currentTargetAxis === undefined ||
+      rcMappingCandidate !== undefined ||
+      rcMappingRawCandidate === undefined
+    ) {
+      return undefined
+    }
+
+    return describeRcMappingRejectedCandidate(rcMappingSession.currentTargetAxis, rcMappingRawCandidate)
+  }, [rcMappingCandidate, rcMappingRawCandidate, rcMappingSession.currentTargetAxis, rcMappingSession.status])
   const rcMappingDetectedChannelMap = useMemo(
     () =>
       Object.fromEntries(
@@ -4777,7 +4878,9 @@ export function App() {
     if (!rcMappingCandidate) {
       setParameterNotice({
         tone: 'warning',
-        text: `${rcMappingTargetGuide.detail} Keep moving only that control until one receiver channel clearly dominates.`
+        text:
+          rcMappingRejectedReason ??
+          `${rcMappingTargetGuide.detail} Keep moving only that control until one receiver channel clearly dominates.`
       })
       return
     }
@@ -5264,6 +5367,234 @@ export function App() {
     }
     return 'Capture fresh RC endpoint values from live stick movement, then stage them in the parameter editor.'
   })()
+
+  const receiverWorkflowDraftCount = receiverStagedDrafts.length
+  const receiverWorkflowInvalidCount = receiverInvalidDrafts.length
+  const receiverAdvancedDraftCount = receiverAdditionalStagedDrafts.length
+  const receiverAdvancedInvalidCount = receiverAdditionalInvalidDrafts.length
+  const receiverHasPendingReview =
+    receiverWorkflowDraftCount + receiverWorkflowInvalidCount + receiverAdvancedDraftCount + receiverAdvancedInvalidCount > 0
+  const receiverEndpointTask = (() => {
+    if (rcRangeExercise.status === 'failed' || rcCalibrationSession.status === 'failed') {
+      return {
+        tone: 'danger' as const,
+        value: 'Needs attention',
+        detail:
+          rcRangeExercise.failureReason ??
+          rcCalibrationSession.failureReason ??
+          'Stick range or endpoint capture needs attention before the radio setup is complete.'
+      }
+    }
+    if (rcRangeExercise.status === 'running' || rcCalibrationSession.status === 'capturing') {
+      return {
+        tone: 'warning' as const,
+        value: 'In progress',
+        detail:
+          rcRangeExercise.status === 'running'
+            ? rcRangeExerciseSummary
+            : rcCalibrationSummary
+      }
+    }
+    if (rcRangeExercise.status === 'passed' && rcCalibrationSession.status === 'ready') {
+      return {
+        tone: 'success' as const,
+        value: 'Ready',
+        detail: 'Stick travel and endpoint capture both completed successfully.'
+      }
+    }
+    if (!snapshot.liveVerification.rcInput.verified) {
+      return {
+        tone: 'warning' as const,
+        value: 'Waiting',
+        detail: 'Live RC telemetry is still needed before endpoint work can start.'
+      }
+    }
+    return {
+      tone: 'neutral' as const,
+      value: `${rcRangeExerciseCompletedCount}/4 axes checked`,
+      detail: 'Verify stick travel first, then capture the calibrated min, center, and max values.'
+    }
+  })()
+  const receiverFlightModesTask = (() => {
+    if (modeSwitchExercise.status === 'failed') {
+      return {
+        tone: 'danger' as const,
+        value: 'Needs attention',
+        detail: modeSwitchExercise.failureReason ?? 'The current flight-mode switch setup needs review.'
+      }
+    }
+    if (modeSwitchExercise.status === 'running') {
+      return {
+        tone: 'warning' as const,
+        value: 'Exercising',
+        detail: modeSwitchExerciseSummary
+      }
+    }
+    if (modeSwitchEstimate.channelNumber === undefined) {
+      return {
+        tone: 'warning' as const,
+        value: 'Set channel',
+        detail: 'Choose which receiver channel ArduPilot should interpret as the flight-mode switch.'
+      }
+    }
+    if (modeSwitchExercise.status === 'passed') {
+      return {
+        tone: 'success' as const,
+        value: `${modeExerciseAssignments.length} positions`,
+        detail: 'The configured flight-mode switch positions were exercised successfully.'
+      }
+    }
+    return {
+      tone: 'neutral' as const,
+      value: modeExerciseAssignments.length > 0 ? `${modeExerciseAssignments.length} configured` : 'Review',
+      detail: 'Assign the mode channel, confirm the slot map, then exercise the switch positions.'
+    }
+  })()
+  const recommendedReceiverTaskId = useMemo<ReceiverTaskId>(() => {
+    if (receiverWorkflowInvalidCount > 0) {
+      return 'review'
+    }
+    if (receiverAdvancedInvalidCount > 0) {
+      return 'advanced'
+    }
+    if (rcMappingSession.status === 'running' || rcMappingSession.status === 'failed' || rcMappingSession.status !== 'ready') {
+      return 'mapping'
+    }
+    if (
+      rcRangeExercise.status === 'running' ||
+      rcRangeExercise.status === 'failed' ||
+      rcCalibrationSession.status === 'capturing' ||
+      rcCalibrationSession.status === 'failed' ||
+      rcRangeExercise.status !== 'passed' ||
+      rcCalibrationSession.status !== 'ready'
+    ) {
+      return 'endpoints'
+    }
+    if (modeSwitchExercise.status === 'running' || modeSwitchExercise.status === 'failed' || modeSwitchExercise.status !== 'passed') {
+      return 'flight-modes'
+    }
+    if (receiverWorkflowDraftCount > 0) {
+      return 'review'
+    }
+    if (receiverAdvancedDraftCount > 0) {
+      return 'advanced'
+    }
+    return 'mapping'
+  }, [
+    modeSwitchExercise.status,
+    rcCalibrationSession.status,
+    rcMappingSession.status,
+    rcRangeExercise.status,
+    receiverAdvancedDraftCount,
+    receiverAdvancedInvalidCount,
+    receiverWorkflowDraftCount,
+    receiverWorkflowInvalidCount
+  ])
+  const activeReceiverTaskId = receiverTaskOverride ?? recommendedReceiverTaskId
+  const receiverTaskCards = useMemo<
+    Array<{
+      id: ReceiverTaskId
+      label: string
+      value: string
+      detail: string
+      tone: StatusTone
+    }>
+  >(
+    () => [
+      {
+        id: 'mapping' as const,
+        label: 'Mapping',
+        value:
+          rcMappingSession.status === 'ready'
+            ? 'Ready'
+            : rcMappingSession.status === 'running'
+              ? `Step ${Math.min(rcMappingCapturedCount + 1, RC_CALIBRATION_AXIS_ORDER.length)}/${RC_CALIBRATION_AXIS_ORDER.length}`
+              : rcMappingSession.status === 'failed'
+                ? 'Needs attention'
+                : snapshot.liveVerification.rcInput.verified
+                  ? 'Not started'
+                  : 'Waiting',
+        detail: rcMappingSummary,
+        tone: toneForModeSwitchExercise(
+          rcMappingSession.status === 'ready' ? 'passed' : rcMappingSession.status === 'running' ? 'running' : rcMappingSession.status === 'failed' ? 'failed' : 'idle'
+        )
+      },
+      {
+        id: 'endpoints' as const,
+        label: 'Endpoints',
+        value: receiverEndpointTask.value,
+        detail: receiverEndpointTask.detail,
+        tone: receiverEndpointTask.tone
+      },
+      {
+        id: 'flight-modes' as const,
+        label: 'Flight Modes',
+        value: receiverFlightModesTask.value,
+        detail: receiverFlightModesTask.detail,
+        tone: receiverFlightModesTask.tone
+      },
+      {
+        id: 'advanced' as const,
+        label: 'Signal Setup',
+        value:
+          receiverAdvancedInvalidCount > 0
+            ? `${receiverAdvancedInvalidCount} invalid`
+            : receiverAdvancedDraftCount > 0
+              ? `${receiverAdvancedDraftCount} staged`
+              : 'In sync',
+        detail:
+          receiverLinkPorts.length > 0
+            ? `Receiver link on ${receiverLinkPorts.map((port) => port.label).join(', ')}. RSSI and extra receiver settings are available here.`
+            : 'RSSI setup and additional receiver settings remain available here when you need them.',
+        tone:
+          receiverAdvancedInvalidCount > 0
+            ? 'danger'
+            : receiverAdvancedDraftCount > 0
+              ? 'warning'
+              : 'neutral'
+      },
+      {
+        id: 'review' as const,
+        label: 'Review',
+        value:
+          receiverWorkflowInvalidCount > 0
+            ? `${receiverWorkflowInvalidCount} invalid`
+            : receiverWorkflowDraftCount > 0
+              ? `${receiverWorkflowDraftCount} staged`
+              : 'In sync',
+        detail:
+          receiverWorkflowDraftCount > 0
+            ? 'Receiver mapping, calibration, or mode changes are staged and ready for final review.'
+            : receiverWorkflowInvalidCount > 0
+              ? 'Some receiver changes need attention before they can be applied safely.'
+              : 'Receiver workflow changes are currently in sync with the controller.',
+        tone:
+          receiverWorkflowInvalidCount > 0
+            ? 'danger'
+            : receiverWorkflowDraftCount > 0
+              ? 'warning'
+              : 'success'
+      }
+    ],
+    [
+      rcMappingCapturedCount,
+      rcMappingSession.status,
+      rcMappingSummary,
+      receiverEndpointTask.detail,
+      receiverEndpointTask.tone,
+      receiverEndpointTask.value,
+      receiverFlightModesTask.detail,
+      receiverFlightModesTask.tone,
+      receiverFlightModesTask.value,
+      receiverAdvancedDraftCount,
+      receiverAdvancedInvalidCount,
+      receiverLinkPorts,
+      receiverWorkflowDraftCount,
+      receiverWorkflowInvalidCount,
+      snapshot.liveVerification.rcInput.verified
+    ]
+  )
+  const activeReceiverTask = receiverTaskCards.find((task) => task.id === activeReceiverTaskId) ?? receiverTaskCards[0]
 
   const motorVerificationSummary = (() => {
     if (motorVerification.status === 'passed') {
@@ -9554,766 +9885,1013 @@ export function App() {
         {activeViewId === 'receiver' ? (
         <div id="setup-panel-rc">
           <Panel
-            title="Live RC Inputs"
-            subtitle="Receiver telemetry, calibrated channel bars, and an estimated flight-mode switch position from the current RC stream."
+            title="Receiver"
+            subtitle="Live RC monitoring plus task-based mapping, endpoint calibration, flight-mode setup, and review."
           >
           <div className="telemetry-stack telemetry-stack--receiver">
-            <div className="receiver-workspace">
-              <div className="receiver-workspace__live">
-                <div className="telemetry-header">
-                  <div>
-                    <h3>Receiver status</h3>
-                    <p>
-                      {snapshot.liveVerification.rcInput.verified
-                        ? `Showing the first ${rcChannelDisplays.length} channels from a ${snapshot.liveVerification.rcInput.channelCount}-channel stream.`
-                        : 'Waiting for live receiver telemetry before promoting radio and mode setup.'}
-                    </p>
+            <div className="receiver-summary-grid">
+              {receiverTaskCards.map((task) => (
+                <button
+                  key={task.id}
+                  type="button"
+                  data-testid={`receiver-summary-${task.id}`}
+                  className={`receiver-summary-card${task.id === activeReceiverTaskId ? ' is-active' : ''}`}
+                  onClick={() => setReceiverTaskOverride(task.id)}
+                >
+                  <div className="receiver-summary-card__header">
+                    <span>{task.label}</span>
+                    <StatusBadge tone={task.tone}>{task.value}</StatusBadge>
                   </div>
-                  <StatusBadge tone={snapshot.liveVerification.rcInput.verified ? 'success' : 'warning'}>
-                    {snapshot.liveVerification.rcInput.verified ? `${snapshot.liveVerification.rcInput.channelCount} channels live` : 'No RC telemetry'}
-                  </StatusBadge>
-                </div>
+                  <p>{task.detail}</p>
+                </button>
+              ))}
+            </div>
 
-                <div className="mode-estimate-card">
-                  <div className="mode-estimate-card__header">
-                    <strong>Flight mode switch</strong>
-                    <StatusBadge tone={recentModeSwitchChange ? 'warning' : modeSwitchEstimate.estimatedSlot !== undefined ? 'success' : 'neutral'}>
-                      {recentModeSwitchChange ? 'Switch moved' : modeSwitchEstimate.estimatedSlot !== undefined ? 'Stable' : 'Waiting'}
+            <div className="receiver-workspace receiver-workspace--task-deck">
+              <div className="receiver-workspace__live receiver-monitor">
+                <div className="receiver-monitor__sticky">
+                  <div className="telemetry-header">
+                    <div>
+                      <h3>Live monitor</h3>
+                      <p>
+                        {snapshot.liveVerification.rcInput.verified
+                          ? `Showing the primary controls first. ${receiverAuxChannelDisplays.length} additional AUX channel${receiverAuxChannelDisplays.length === 1 ? '' : 's'} are available on demand.`
+                          : 'Waiting for live receiver telemetry before mapping, calibration, and mode setup can continue.'}
+                      </p>
+                    </div>
+                    <StatusBadge tone={snapshot.liveVerification.rcInput.verified ? 'success' : 'warning'}>
+                      {snapshot.liveVerification.rcInput.verified ? `${snapshot.liveVerification.rcInput.channelCount} channels live` : 'No RC telemetry'}
                     </StatusBadge>
                   </div>
-                  <p>
-                    {modeSwitchEstimate.channelNumber === undefined
-                      ? 'Mode channel is not configured yet.'
-                      : modeSwitchEstimate.pwm === undefined
-                        ? `Configured for CH${modeSwitchEstimate.channelNumber}, waiting for that channel to stream.`
-                        : `Estimated slot ${modeSwitchEstimate.estimatedSlot} on CH${modeSwitchEstimate.channelNumber} at ${modeSwitchEstimate.pwm} us.`}
-                  </p>
-                  <small>
-                    {modeSwitchEstimate.configuredParamId && modeSwitchEstimate.configuredValue !== undefined
-                      ? `${modeSwitchEstimate.configuredParamId} = ${formatModeAssignment(modeSwitchEstimate.configuredValue)}`
-                      : `Heartbeat mode: ${snapshot.vehicle?.flightMode ?? 'Unknown'}`}
-                  </small>
-                  {modeSwitchActivity ? (
-                    <small>
-                      {modeSwitchActivity.previousSlot !== undefined && modeSwitchActivity.previousSlot !== modeSwitchActivity.currentSlot
-                        ? `Last slot change: ${formatModeAssignment(readRoundedParameter(snapshot, `FLTMODE${modeSwitchActivity.previousSlot}`))} -> ${formatModeAssignment(
-                            readRoundedParameter(snapshot, `FLTMODE${modeSwitchActivity.currentSlot}`)
-                          )}`
-                        : `Last switch movement: ${modeSwitchActivity.previousPwm ?? modeSwitchActivity.currentPwm} us -> ${modeSwitchActivity.currentPwm} us`}
-                    </small>
-                  ) : null}
-                </div>
 
-                <RcChannelBars
-                  channels={rcChannelDisplays}
-                  verified={snapshot.liveVerification.rcInput.verified}
-                  testId="receiver-channel-bars"
-                />
+                  <div className="receiver-live-primary-grid">
+                    {rcAxisObservations.map((axis) => {
+                      const channel = receiverPrimaryChannelDisplays.find((entry) => entry.channelNumber === axis.channelNumber)
+                      return (
+                        <article key={axis.axisId} className="receiver-live-card">
+                          <div className="receiver-live-card__header">
+                            <strong>{axis.label}</strong>
+                            <span>CH{axis.channelNumber}</span>
+                          </div>
+                          <div className="rc-bar" aria-hidden="true">
+                            <div className="rc-bar__trim" style={{ left: `${channel?.trimPercent ?? 50}%` }} />
+                            <div className="rc-bar__fill" style={{ width: `${channel?.fillPercent ?? 0}%` }} />
+                          </div>
+                          <div className="receiver-live-card__footer">
+                            <span>{axis.pwm !== undefined ? `${axis.pwm} us` : 'No data'}</span>
+                            <span>{channel?.role ?? 'Primary control'}</span>
+                          </div>
+                        </article>
+                      )
+                    })}
 
-                <div className="rc-channel-grid">
-                  {rcChannelDisplays.map((channel) => (
-                    <article
-                      key={channel.channelNumber}
-                      className={`rc-channel-card${channel.isModeChannel ? ' rc-channel-card--mode' : ''}${channel.isModeChannel && recentModeSwitchChange ? ' rc-channel-card--active' : ''}`}
-                    >
-                      <div className="rc-channel-card__header">
-                        <strong>CH{channel.channelNumber}</strong>
-                        <span>{channel.role}</span>
+                    <article className={`receiver-live-card receiver-live-card--mode${recentModeSwitchChange ? ' receiver-live-card--attention' : ''}`}>
+                      <div className="receiver-live-card__header">
+                        <strong>Flight mode</strong>
+                        <span>{modeSwitchEstimate.channelNumber !== undefined ? `CH${modeSwitchEstimate.channelNumber}` : 'Unset'}</span>
                       </div>
-                      <div className="rc-bar" aria-hidden="true">
-                        <div className="rc-bar__trim" style={{ left: `${channel.trimPercent}%` }} />
-                        <div className="rc-bar__fill" style={{ width: `${channel.fillPercent}%` }} />
-                      </div>
-                      <div className="rc-channel-card__footer">
-                        <span>{channel.pwm !== undefined ? `${channel.pwm} us` : 'No data'}</span>
-                        <span>{channel.isModeChannel ? 'Mode channel' : 'Live input'}</span>
+                      <p>
+                        {modeSwitchEstimate.channelNumber === undefined
+                          ? 'Mode channel not configured yet.'
+                          : modeSwitchEstimate.estimatedSlot !== undefined
+                            ? `Slot ${modeSwitchEstimate.estimatedSlot} · ${formatModeAssignment(modeSwitchEstimate.configuredValue)}`
+                            : 'Waiting for the configured mode channel to move.'}
+                      </p>
+                      <div className="receiver-live-card__footer">
+                        <span>{modeSwitchEstimate.pwm !== undefined ? `${modeSwitchEstimate.pwm} us` : 'No data'}</span>
+                        <span>{recentModeSwitchChange ? 'Recent movement' : 'Mode switch'}</span>
                       </div>
                     </article>
+                  </div>
+
+                  <RcChannelBars
+                    channels={receiverPrimaryChannelDisplays}
+                    verified={snapshot.liveVerification.rcInput.verified}
+                    testId="receiver-channel-bars"
+                  />
+
+                  <div className="receiver-monitor__meta">
+                    <article className="telemetry-metric-card">
+                      <span>RSSI</span>
+                      <strong>{snapshot.liveVerification.rcInput.rssi ?? 'Unknown'}</strong>
+                      <small>{formatArducopterRssiType(rssiType)}</small>
+                    </article>
+                    <article className="telemetry-metric-card">
+                      <span>Receiver link</span>
+                      <strong>{receiverLinkPorts.length > 0 ? receiverLinkPorts.map((port) => port.label).join(', ') : 'Not detected'}</strong>
+                      <small>
+                        {receiverLinkPorts.length > 0
+                          ? receiverLinkPorts.map((port) => port.protocolLabel).join(', ')
+                          : 'Assigned from Ports when a serial receiver is in use'}
+                      </small>
+                    </article>
+                  </div>
+
+                  <div className="receiver-channel-disclosure">
+                    <div>
+                      <strong>Aux channel details</strong>
+                      <p>Keep the page focused on the primary controls by default. Expand this only when checking AUX switches and spare channels.</p>
+                    </div>
+                    <button
+                      style={buttonStyle()}
+                      onClick={() => setShowReceiverChannelDetails((existing) => !existing)}
+                    >
+                      {showReceiverChannelDetails ? 'Hide AUX Channels' : `Show AUX Channels (${receiverAuxChannelDisplays.length})`}
+                    </button>
+                  </div>
+
+                  {showReceiverChannelDetails ? (
+                    receiverAuxChannelDisplays.length > 0 ? (
+                      <div className="rc-channel-grid rc-channel-grid--secondary">
+                        {receiverAuxChannelDisplays.map((channel) => (
+                          <article
+                            key={channel.channelNumber}
+                            className={`rc-channel-card${channel.isModeChannel ? ' rc-channel-card--mode' : ''}${channel.isModeChannel && recentModeSwitchChange ? ' rc-channel-card--active' : ''}`}
+                          >
+                            <div className="rc-channel-card__header">
+                              <strong>CH{channel.channelNumber}</strong>
+                              <span>{channel.role}</span>
+                            </div>
+                            <div className="rc-bar" aria-hidden="true">
+                              <div className="rc-bar__trim" style={{ left: `${channel.trimPercent}%` }} />
+                              <div className="rc-bar__fill" style={{ width: `${channel.fillPercent}%` }} />
+                            </div>
+                            <div className="rc-channel-card__footer">
+                              <span>{channel.pwm !== undefined ? `${channel.pwm} us` : 'No data'}</span>
+                              <span>{channel.isModeChannel ? 'Mode channel' : 'Aux input'}</span>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="switch-exercise-warning">No additional AUX channels are currently streaming beyond the primary controls.</p>
+                    )
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="receiver-workspace__config receiver-task-deck">
+                <div className="receiver-task-deck__header">
+                  <div>
+                    <h3>{activeReceiverTask.label}</h3>
+                    <p>{activeReceiverTask.detail}</p>
+                  </div>
+                  <StatusBadge tone={activeReceiverTask.tone}>{activeReceiverTask.value}</StatusBadge>
+                </div>
+
+                <div className="receiver-task-nav" data-testid="receiver-task-nav">
+                  {receiverTaskCards.map((task) => (
+                    <button
+                      key={`task-nav:${task.id}`}
+                      type="button"
+                      className={`receiver-task-nav__button${task.id === activeReceiverTaskId ? ' is-active' : ''}`}
+                      onClick={() => setReceiverTaskOverride(task.id)}
+                    >
+                      <span>{task.label}</span>
+                      <small>{task.value}</small>
+                    </button>
                   ))}
                 </div>
 
-                <div className="receiver-exercise-grid">
-                <div className="switch-exercise-card">
-              <div className="switch-exercise-card__header">
-                <div>
-                  <strong>Switch exercise</strong>
-                  <p>{modeSwitchExerciseSummary}</p>
-                </div>
-                <StatusBadge tone={toneForModeSwitchExercise(modeSwitchExercise.status)}>{modeSwitchExercise.status}</StatusBadge>
-              </div>
-
-              <div className="switch-exercise-progress" aria-hidden="true">
-                <div className="switch-exercise-progress__fill" style={{ width: `${modeSwitchExerciseProgress}%` }} />
-              </div>
-
-              <div className="config-pills">
-                {(modeSwitchExercise.status === 'idle' ? modeExerciseAssignments.map((assignment) => assignment.slot) : modeSwitchExercise.targetSlots).map((slot) => {
-                  const visited = modeSwitchExercise.visitedSlots.includes(slot)
-                  const isTarget = modeSwitchExercise.status === 'running' && modeSwitchExercise.currentTargetSlot === slot
-                  const classes = [visited ? 'is-complete' : undefined, isTarget ? 'is-target' : undefined]
-                    .filter((value): value is string => value !== undefined)
-                    .join(' ')
-
-                  return (
-                    <span key={slot} className={classes || undefined}>
-                      {formatModeSlotLabel(snapshot, slot)}
-                    </span>
-                  )
-                })}
-              </div>
-
-              {modeSwitchExercise.unexpectedSlots.length > 0 ? (
-                <p className="switch-exercise-warning">
-                  Observed unconfigured positions: {modeSwitchExercise.unexpectedSlots.map((slot) => `slot ${slot}`).join(', ')}
-                </p>
-              ) : null}
-
-              <ol className="switch-exercise-instructions">
-                {modeSwitchExerciseInstructions.map((instruction) => (
-                  <li key={instruction}>{instruction}</li>
-                ))}
-              </ol>
-
-              <div className="switch-exercise-controls">
-                <button
-                  style={buttonStyle('primary')}
-                  onClick={handleStartModeSwitchExercise}
-                  disabled={!canRunModeSwitchExercise || modeSwitchExercise.status === 'running'}
-                >
-                  {modeSwitchExercise.status === 'passed' ? 'Run Again' : 'Start Exercise'}
-                </button>
-                <button
-                  style={buttonStyle()}
-                  onClick={handleResetModeSwitchExercise}
-                  disabled={modeSwitchExercise.status === 'idle'}
-                >
-                  Reset
-                </button>
-                <button
-                  style={buttonStyle('secondary')}
-                  onClick={handleFailModeSwitchExercise}
-                  disabled={modeSwitchExercise.status !== 'running'}
-                >
-                  Mark Failed
-                </button>
-              </div>
-                </div>
-
-                <div className="rc-range-card">
-              <div className="switch-exercise-card__header">
-                <div>
-                  <strong>Stick range exercise</strong>
-                  <p>{rcRangeExerciseSummary}</p>
-                </div>
-                <StatusBadge tone={toneForModeSwitchExercise(rcRangeExercise.status)}>{rcRangeExercise.status}</StatusBadge>
-              </div>
-
-              <div className="switch-exercise-progress" aria-hidden="true">
-                <div className="switch-exercise-progress__fill" style={{ width: `${rcRangeExerciseProgress}%` }} />
-              </div>
-
-              <div className="rc-range-axis-grid">
-                {rcAxisObservations.map((axis) => {
-                  const progress = rcRangeExercise.axisProgress[axis.axisId]
-                  return (
-                    <article
-                      key={axis.axisId}
-                      className={`rc-range-axis-card${rcRangeExercise.currentTargetAxis === axis.axisId ? ' rc-range-axis-card--target' : ''}${progress.completed ? ' rc-range-axis-card--complete' : ''}`}
-                    >
-                      <div className="rc-range-axis-card__header">
-                        <strong>{axis.label}</strong>
-                        <span>CH{axis.channelNumber}</span>
+                {activeReceiverTaskId === 'mapping' ? (
+                  <div className="receiver-task-panel receiver-task-panel--stack">
+                    <div className="rc-mapping-card">
+                      <div className="switch-exercise-card__header">
+                        <div>
+                          <strong>RC channel mapping</strong>
+                          <p>{rcMappingSummary}</p>
+                        </div>
+                        <StatusBadge tone={toneForModeSwitchExercise(rcMappingSession.status === 'ready' ? 'passed' : rcMappingSession.status === 'running' ? 'running' : rcMappingSession.status === 'failed' ? 'failed' : 'idle')}>
+                          {rcMappingSession.status}
+                        </StatusBadge>
                       </div>
-                      <p>{axis.pwm !== undefined ? `${axis.pwm} us live` : 'No live data'}</p>
-                      <div className="config-pills">
-                        <span className={progress.lowObserved ? 'is-complete' : undefined}>Low</span>
-                        <span className={progress.highObserved ? 'is-complete' : undefined}>High</span>
-                        {axis.axisId !== 'throttle' ? (
-                          <span className={progress.centeredObserved ? 'is-complete' : undefined}>Center</span>
-                        ) : null}
+
+                      <div className={`rc-mapping-focus${rcMappingSession.status === 'running' ? ' rc-mapping-focus--active' : ''}${rcMappingSession.status === 'ready' ? ' rc-mapping-focus--complete' : ''}`}>
+                        <div className="rc-mapping-focus__copy">
+                          <span>
+                            {rcMappingSession.status === 'running'
+                              ? `Step ${Math.min(rcMappingCapturedCount + 1, RC_CALIBRATION_AXIS_ORDER.length)} of ${RC_CALIBRATION_AXIS_ORDER.length}`
+                              : rcMappingSession.status === 'ready'
+                                ? 'Mapping Complete'
+                                : 'Guided Capture'}
+                          </span>
+                          <strong>
+                            {rcMappingSession.status === 'running'
+                              ? rcMappingTargetGuide.title
+                              : rcMappingSession.status === 'ready'
+                                ? 'Roll, pitch, throttle, and yaw were all identified.'
+                                : 'Capture one axis at a time.'}
+                          </strong>
+                          <p>
+                            {rcMappingSession.status === 'running'
+                              ? rcMappingTargetGuide.detail
+                              : rcMappingSession.status === 'ready'
+                                ? rcMappingStagedChangeCount > 0
+                                  ? 'Review the detected map below, then stage the RCMAP_* changes before continuing with endpoint capture.'
+                                  : 'The current receiver map already matches the live inputs, so you can continue without staging any remap.'
+                                : 'Start the guided capture, then move only the highlighted control. The app will lock onto the dominant channel automatically.'}
+                          </p>
+                        </div>
+
+                        <div className="rc-mapping-focus__status">
+                          <StatusBadge tone={rcMappingCandidateConfidence.tone}>
+                            {rcMappingSession.status === 'running'
+                              ? `${rcMappingCandidateConfidence.label} detection`
+                              : rcMappingSession.status === 'ready'
+                                ? `${rcMappingCapturedCount}/${RC_CALIBRATION_AXIS_ORDER.length} captured`
+                                : 'idle'}
+                          </StatusBadge>
+                          <div className="config-pills">
+                            <span>{rcMappingCapturedCount}/{RC_CALIBRATION_AXIS_ORDER.length} axes captured</span>
+                            {rcMappingCandidate ? <span>CH{rcMappingCandidate.channelNumber} leading</span> : null}
+                            {rcMappingSession.status === 'ready' ? <span>{rcMappingStagedChangeCount} remap changes</span> : null}
+                          </div>
+                        </div>
                       </div>
-                    </article>
-                  )
-                })}
-              </div>
 
-              <ol className="switch-exercise-instructions">
-                {rcRangeExerciseInstructions.map((instruction) => (
-                  <li key={instruction}>{instruction}</li>
-                ))}
-              </ol>
-
-              <div className="switch-exercise-controls">
-                <button
-                  style={buttonStyle('primary')}
-                  onClick={handleStartRcRangeExercise}
-                  disabled={!canRunRcRangeExercise || rcRangeExercise.status === 'running'}
-                >
-                  {rcRangeExercise.status === 'passed' ? 'Run Again' : 'Start Exercise'}
-                </button>
-                <button
-                  style={buttonStyle()}
-                  onClick={handleResetRcRangeExercise}
-                  disabled={rcRangeExercise.status === 'idle'}
-                >
-                  Reset
-                </button>
-                <button
-                  style={buttonStyle('secondary')}
-                  onClick={handleFailRcRangeExercise}
-                  disabled={rcRangeExercise.status !== 'running'}
-                >
-                  Mark Failed
-                </button>
-              </div>
-                </div>
-                </div>
-              </div>
-
-              <div className="receiver-workspace__config">
-                <div className="receiver-config-grid">
-
-                <div className="rc-mapping-card">
-              <div className="switch-exercise-card__header">
-                <div>
-                  <strong>RC channel mapping</strong>
-                  <p>{rcMappingSummary}</p>
-                </div>
-                <StatusBadge tone={toneForModeSwitchExercise(rcMappingSession.status === 'ready' ? 'passed' : rcMappingSession.status === 'running' ? 'running' : rcMappingSession.status === 'failed' ? 'failed' : 'idle')}>
-                  {rcMappingSession.status}
-                </StatusBadge>
-              </div>
-
-              <div className={`rc-mapping-focus${rcMappingSession.status === 'running' ? ' rc-mapping-focus--active' : ''}${rcMappingSession.status === 'ready' ? ' rc-mapping-focus--complete' : ''}`}>
-                <div className="rc-mapping-focus__copy">
-                  <span>
-                    {rcMappingSession.status === 'running'
-                      ? `Step ${Math.min(rcMappingCapturedCount + 1, RC_CALIBRATION_AXIS_ORDER.length)} of ${RC_CALIBRATION_AXIS_ORDER.length}`
-                      : rcMappingSession.status === 'ready'
-                        ? 'Mapping Complete'
-                        : 'Guided Capture'}
-                  </span>
-                  <strong>
-                    {rcMappingSession.status === 'running'
-                      ? rcMappingTargetGuide.title
-                      : rcMappingSession.status === 'ready'
-                        ? 'Roll, pitch, throttle, and yaw were all identified.'
-                        : 'Capture one axis at a time.'}
-                  </strong>
-                  <p>
-                    {rcMappingSession.status === 'running'
-                      ? rcMappingTargetGuide.detail
-                      : rcMappingSession.status === 'ready'
-                        ? rcMappingStagedChangeCount > 0
-                          ? 'Review the detected map below, then stage the RCMAP_* changes before continuing with endpoint capture.'
-                          : 'The current receiver map already matches the detected live inputs, so you can continue without staging any remap.'
-                        : 'Start the guided capture, then move only the highlighted control. The app will lock onto the dominant channel automatically.'}
-                  </p>
-                </div>
-
-                <div className="rc-mapping-focus__status">
-                  <StatusBadge tone={rcMappingCandidateConfidence.tone}>
-                    {rcMappingSession.status === 'running'
-                      ? `${rcMappingCandidateConfidence.label} detection`
-                      : rcMappingSession.status === 'ready'
-                        ? `${rcMappingCapturedCount}/${RC_CALIBRATION_AXIS_ORDER.length} captured`
-                        : 'idle'}
-                  </StatusBadge>
-                  <div className="config-pills">
-                    <span>{rcMappingCapturedCount}/{RC_CALIBRATION_AXIS_ORDER.length} axes captured</span>
-                    {rcMappingCandidate ? <span>CH{rcMappingCandidate.channelNumber} leading</span> : null}
-                    {rcMappingSession.status === 'ready' ? <span>{rcMappingStagedChangeCount} remap changes</span> : null}
-                  </div>
-                </div>
-              </div>
-
-              <div className="rc-range-axis-grid">
-                {RC_CALIBRATION_AXIS_ORDER.map((axisId) => {
-                  const capture = rcMappingSession.captures[axisId]
-                  const activeTarget = rcMappingSession.currentTargetAxis === axisId
-                  return (
-                    <article
-                      key={axisId}
-                      className={`rc-range-axis-card${activeTarget ? ' rc-range-axis-card--target' : ''}${capture.detectedChannelNumber !== undefined ? ' rc-range-axis-card--complete' : ''}`}
-                    >
-                      <div className="rc-range-axis-card__header">
-                        <strong>{formatRcAxisLabel(axisId)}</strong>
-                        <span>{capture.detectedChannelNumber !== undefined ? 'Captured' : activeTarget ? 'Current target' : 'Pending'}</span>
+                      <div className="rc-range-axis-grid">
+                        {RC_CALIBRATION_AXIS_ORDER.map((axisId) => {
+                          const capture = rcMappingSession.captures[axisId]
+                          const activeTarget = rcMappingSession.currentTargetAxis === axisId
+                          return (
+                            <article
+                              key={axisId}
+                              className={`rc-range-axis-card${activeTarget ? ' rc-range-axis-card--target' : ''}${capture.detectedChannelNumber !== undefined ? ' rc-range-axis-card--complete' : ''}`}
+                            >
+                              <div className="rc-range-axis-card__header">
+                                <strong>{formatRcAxisLabel(axisId)}</strong>
+                                <span>{capture.detectedChannelNumber !== undefined ? 'Captured' : activeTarget ? 'Current target' : 'Pending'}</span>
+                              </div>
+                              <p>
+                                {capture.detectedChannelNumber !== undefined
+                                  ? `Current map CH${currentRcAxisChannelMap[axisId]} · detected CH${capture.detectedChannelNumber}${capture.deltaUs !== undefined ? ` (${Math.round(capture.deltaUs)}us delta)` : ''}`
+                                  : activeTarget
+                                    ? rcMappingCandidate
+                                      ? `Current dominant channel CH${rcMappingCandidate.channelNumber} (${Math.round(rcMappingCandidate.deltaUs)}us delta)`
+                                      : 'Waiting for one clear dominant channel.'
+                                    : `Current map CH${currentRcAxisChannelMap[axisId]} · not captured yet`}
+                              </p>
+                              {activeTarget && rcMappingSession.status === 'running' ? (
+                                <div className="config-pills">
+                                  <span className="is-target">{rcMappingTargetGuide.title}</span>
+                                  <span>{rcMappingCandidate ? 'Auto-capture armed' : 'Move only this control'}</span>
+                                </div>
+                              ) : null}
+                            </article>
+                          )
+                        })}
                       </div>
-                      <p>
-                        {capture.detectedChannelNumber !== undefined
-                          ? `Current map CH${currentRcAxisChannelMap[axisId]} · detected CH${capture.detectedChannelNumber}${capture.deltaUs !== undefined ? ` (${Math.round(capture.deltaUs)}us delta)` : ''}`
-                          : activeTarget
-                            ? rcMappingCandidate
-                              ? `Current dominant channel CH${rcMappingCandidate.channelNumber} (${Math.round(rcMappingCandidate.deltaUs)}us delta)`
-                              : 'Waiting for one clear dominant channel.'
-                            : `Current map CH${currentRcAxisChannelMap[axisId]} · not captured yet`}
-                      </p>
-                      {activeTarget && rcMappingSession.status === 'running' ? (
-                        <div className="config-pills">
-                          <span className="is-target">{rcMappingTargetGuide.title}</span>
-                          <span>{rcMappingCandidate ? 'Auto-capture armed' : 'Move only this control'}</span>
+
+                      {rcMappingCandidate ? (
+                        <div key={rcMappingAutoCaptureKey} className="rc-mapping-auto-capture">
+                          <div className="rc-mapping-auto-capture__copy">
+                            <strong>Locking onto CH{rcMappingCandidate.channelNumber}</strong>
+                            <small>Repeated strong movement on the same channel will auto-capture it and advance to the next axis.</small>
+                          </div>
+                          <div className="rc-mapping-auto-capture__meter" aria-hidden="true">
+                            <span
+                              className="rc-mapping-auto-capture__fill"
+                              style={{ width: `${rcMappingAutoCaptureProgressPercent}%` }}
+                            />
+                          </div>
                         </div>
                       ) : null}
-                    </article>
-                  )
-                })}
-              </div>
 
-              {rcMappingSession.status === 'running' ? (
-                <div className="rc-mapping-candidate-panel">
-                  <div className="rc-mapping-candidate-panel__header">
-                    <strong>Live candidates right now</strong>
-                    <small>Top channel movement compared to the baseline captured when this exercise started.</small>
-                  </div>
-                  {rcMappingLiveCandidates.length > 0 ? (
-                    <div className="rc-mapping-candidate-list">
-                      {rcMappingLiveCandidates.map((candidate, index) => (
-                        <article
-                          key={`${rcMappingSession.currentTargetAxis}:${candidate.channelNumber}`}
-                          className={`rc-mapping-candidate${index === 0 ? ' is-leading' : ''}`}
-                        >
-                          <div className="rc-mapping-candidate__header">
-                            <strong>CH{candidate.channelNumber}</strong>
-                            <StatusBadge tone={index === 0 ? rcMappingCandidateConfidence.tone : 'neutral'}>
-                              {index === 0 ? 'leading' : 'candidate'}
-                            </StatusBadge>
+                      {!rcMappingCandidate && rcMappingRejectedReason ? (
+                        <p className="switch-exercise-warning">{rcMappingRejectedReason}</p>
+                      ) : null}
+
+                      {rcMappingSession.status === 'running' ? (
+                        <div className="receiver-inline-toggle">
+                          <div>
+                            <strong>Detection diagnostics</strong>
+                            <p>Only expand this when you need to see which channels are competing during the current capture.</p>
                           </div>
-                          <p>{Math.round(candidate.deltaUs)} us change</p>
-                          <small>
-                            {Math.round(candidate.baselinePwm)} us baseline to {Math.round(candidate.livePwm)} us live
-                          </small>
-                        </article>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="switch-exercise-warning">No channel is standing out yet. Move only the highlighted control and keep the others still.</p>
-                  )}
+                          <button
+                            style={buttonStyle()}
+                            onClick={() => setShowReceiverMappingDiagnostics((existing) => !existing)}
+                          >
+                            {showReceiverMappingDiagnostics ? 'Hide Detection Details' : 'Show Detection Details'}
+                          </button>
+                        </div>
+                      ) : null}
 
-                  {rcMappingCandidate ? (
-                    <div key={rcMappingAutoCaptureKey} className="rc-mapping-auto-capture">
-                      <div className="rc-mapping-auto-capture__copy">
-                        <strong>Locking onto CH{rcMappingCandidate.channelNumber}</strong>
+                      {rcMappingSession.status === 'running' && showReceiverMappingDiagnostics ? (
+                        <div className="rc-mapping-candidate-panel">
+                          <div className="rc-mapping-candidate-panel__header">
+                            <strong>Live candidates right now</strong>
+                            <small>Top channel movement compared to the baseline captured when this exercise started.</small>
+                          </div>
+                          {rcMappingLiveCandidates.length > 0 ? (
+                            <div className="rc-mapping-candidate-list">
+                              {rcMappingLiveCandidates.map((candidate, index) => (
+                                <article
+                                  key={`${rcMappingSession.currentTargetAxis}:${candidate.channelNumber}`}
+                                  className={`rc-mapping-candidate${index === 0 ? ' is-leading' : ''}`}
+                                >
+                                  <div className="rc-mapping-candidate__header">
+                                    <strong>CH{candidate.channelNumber}</strong>
+                                    <StatusBadge tone={index === 0 ? rcMappingCandidateConfidence.tone : 'neutral'}>
+                                      {index === 0 ? 'leading' : 'candidate'}
+                                    </StatusBadge>
+                                  </div>
+                                  <p>{Math.round(candidate.deltaUs)} us change</p>
+                                  <small>
+                                    {Math.round(candidate.baselinePwm)} us baseline to {Math.round(candidate.livePwm)} us live
+                                  </small>
+                                </article>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="switch-exercise-warning">No channel is standing out yet. Move only the highlighted control and keep the others still.</p>
+                          )}
+                        </div>
+                      ) : null}
+
+                      <ol className="switch-exercise-instructions">
+                        {rcMappingInstructions.map((instruction) => (
+                          <li key={instruction}>{instruction}</li>
+                        ))}
+                      </ol>
+
+                      <div className="switch-exercise-controls">
+                        <button
+                          style={buttonStyle('primary')}
+                          onClick={handleStartRcMappingExercise}
+                          disabled={!canRunRcMappingExercise || rcMappingSession.status === 'running'}
+                        >
+                          {rcMappingSession.status === 'ready' ? 'Run Guided Mapping Again' : 'Begin Guided Mapping'}
+                        </button>
+                        <button
+                          style={buttonStyle('secondary')}
+                          onClick={handleConfirmRcMappingCandidate}
+                          disabled={rcMappingSession.status !== 'running' || rcMappingCandidate === undefined}
+                        >
+                          {rcMappingCandidate && rcMappingSession.currentTargetAxis
+                            ? `Capture CH${rcMappingCandidate.channelNumber} for ${formatRcAxisLabel(rcMappingSession.currentTargetAxis)}`
+                            : 'Capture Current Channel'}
+                        </button>
+                        <button
+                          style={buttonStyle('secondary')}
+                          onClick={handleStageRcMappingDrafts}
+                          disabled={rcMappingSession.status !== 'ready' || rcMappingStagedChangeCount === 0}
+                        >
+                          {rcMappingSession.status === 'ready' && rcMappingStagedChangeCount === 0
+                            ? 'No RCMAP Changes Needed'
+                            : `Stage Detected Mapping (${rcMappingStagedChangeCount})`}
+                        </button>
+                        <button
+                          style={buttonStyle()}
+                          onClick={handleResetRcMappingExercise}
+                          disabled={rcMappingSession.status === 'idle'}
+                        >
+                          Start Over
+                        </button>
+                        <button
+                          style={buttonStyle('secondary')}
+                          onClick={handleFailRcMappingExercise}
+                          disabled={rcMappingSession.status !== 'running'}
+                        >
+                          Can’t Isolate Axis
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {activeReceiverTaskId === 'endpoints' ? (
+                  <div className="receiver-task-panel receiver-task-panel--stack">
+                    <div className="receiver-task-stage-strip">
+                      <article className={`receiver-task-stage${rcRangeExercise.status === 'passed' ? ' is-complete' : rcRangeExercise.status === 'running' ? ' is-active' : ''}`}>
+                        <span>Stage 1</span>
+                        <strong>Stick range</strong>
+                        <p>{rcRangeExerciseSummary}</p>
+                      </article>
+                      <article className={`receiver-task-stage${rcCalibrationSession.status === 'ready' ? ' is-complete' : rcCalibrationSession.status === 'capturing' ? ' is-active' : ''}`}>
+                        <span>Stage 2</span>
+                        <strong>Endpoint capture</strong>
+                        <p>{rcCalibrationSummary}</p>
+                      </article>
+                    </div>
+
+                    <div className="receiver-task-two-up">
+                      <div className="rc-range-card">
+                        <div className="switch-exercise-card__header">
+                          <div>
+                            <strong>Stick range exercise</strong>
+                            <p>{rcRangeExerciseSummary}</p>
+                          </div>
+                          <StatusBadge tone={toneForModeSwitchExercise(rcRangeExercise.status)}>{rcRangeExercise.status}</StatusBadge>
+                        </div>
+
+                        <div className="switch-exercise-progress" aria-hidden="true">
+                          <div className="switch-exercise-progress__fill" style={{ width: `${rcRangeExerciseProgress}%` }} />
+                        </div>
+
+                        <div className="rc-range-axis-grid">
+                          {rcAxisObservations.map((axis) => {
+                            const progress = rcRangeExercise.axisProgress[axis.axisId]
+                            return (
+                              <article
+                                key={axis.axisId}
+                                className={`rc-range-axis-card${rcRangeExercise.currentTargetAxis === axis.axisId ? ' rc-range-axis-card--target' : ''}${progress.completed ? ' rc-range-axis-card--complete' : ''}`}
+                              >
+                                <div className="rc-range-axis-card__header">
+                                  <strong>{axis.label}</strong>
+                                  <span>CH{axis.channelNumber}</span>
+                                </div>
+                                <p>{axis.pwm !== undefined ? `${axis.pwm} us live` : 'No live data'}</p>
+                                <div className="config-pills">
+                                  <span className={progress.lowObserved ? 'is-complete' : undefined}>Low</span>
+                                  <span className={progress.highObserved ? 'is-complete' : undefined}>High</span>
+                                  {axis.axisId !== 'throttle' ? (
+                                    <span className={progress.centeredObserved ? 'is-complete' : undefined}>Center</span>
+                                  ) : null}
+                                </div>
+                              </article>
+                            )
+                          })}
+                        </div>
+
+                        <ol className="switch-exercise-instructions">
+                          {rcRangeExerciseInstructions.map((instruction) => (
+                            <li key={instruction}>{instruction}</li>
+                          ))}
+                        </ol>
+
+                        <div className="switch-exercise-controls">
+                          <button
+                            style={buttonStyle('primary')}
+                            onClick={handleStartRcRangeExercise}
+                            disabled={!canRunRcRangeExercise || rcRangeExercise.status === 'running'}
+                          >
+                            {rcRangeExercise.status === 'passed' ? 'Run Again' : 'Start Exercise'}
+                          </button>
+                          <button
+                            style={buttonStyle()}
+                            onClick={handleResetRcRangeExercise}
+                            disabled={rcRangeExercise.status === 'idle'}
+                          >
+                            Reset
+                          </button>
+                          <button
+                            style={buttonStyle('secondary')}
+                            onClick={handleFailRcRangeExercise}
+                            disabled={rcRangeExercise.status !== 'running'}
+                          >
+                            Mark Failed
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="rc-calibration-card">
+                        <div className="switch-exercise-card__header">
+                          <div>
+                            <strong>RC calibration capture</strong>
+                            <p>{rcCalibrationSummary}</p>
+                          </div>
+                          <StatusBadge tone={toneForModeSwitchExercise(rcCalibrationSession.status === 'ready' ? 'passed' : rcCalibrationSession.status === 'capturing' ? 'running' : rcCalibrationSession.status === 'failed' ? 'failed' : 'idle')}>
+                            {rcCalibrationSession.status}
+                          </StatusBadge>
+                        </div>
+
+                        <div className="config-pills">
+                          {rcAxisObservations.map((axis) => (
+                            <span key={axis.axisId}>
+                              {axis.label}: CH{axis.channelNumber}
+                            </span>
+                          ))}
+                        </div>
+
+                        <div className="rc-range-axis-grid">
+                          {RC_CALIBRATION_AXIS_ORDER.map((axisId) => {
+                            const capture = rcCalibrationSession.captures[axisId]
+                            return (
+                              <article
+                                key={axisId}
+                                className={`rc-range-axis-card${rcCalibrationCaptureComplete(capture) ? ' rc-range-axis-card--complete' : ''}`}
+                              >
+                                <div className="rc-range-axis-card__header">
+                                  <strong>{capture.label}</strong>
+                                  <span>CH{capture.channelNumber}</span>
+                                </div>
+                                <p>
+                                  Min {capture.observedMin !== undefined ? Math.round(capture.observedMin) : 'Unknown'} us · Max{' '}
+                                  {capture.observedMax !== undefined ? Math.round(capture.observedMax) : 'Unknown'} us
+                                </p>
+                                <div className="config-pills">
+                                  <span className={capture.lowObserved ? 'is-complete' : undefined}>Low</span>
+                                  <span className={capture.highObserved ? 'is-complete' : undefined}>High</span>
+                                  {axisId !== 'throttle' ? (
+                                    <span className={capture.centeredObserved ? 'is-complete' : undefined}>
+                                      Trim {capture.trimPwm !== undefined ? Math.round(capture.trimPwm) : 'pending'}
+                                    </span>
+                                  ) : null}
+                                </div>
+                              </article>
+                            )
+                          })}
+                        </div>
+
+                        <ol className="switch-exercise-instructions">
+                          <li>Start capture with the sticks centered and throttle low.</li>
+                          <li>Move roll, pitch, throttle, and yaw through their full travel.</li>
+                          <li>Stage the captured values, then review and apply them from the Receiver view before confirming the radio step.</li>
+                        </ol>
+
+                        <div className="switch-exercise-controls">
+                          <button
+                            style={buttonStyle('primary')}
+                            onClick={handleStartRcCalibrationCapture}
+                            disabled={!canCaptureRcCalibration || rcCalibrationSession.status === 'capturing'}
+                          >
+                            {rcCalibrationSession.status === 'ready' ? 'Capture Again' : 'Start Capture'}
+                          </button>
+                          <button
+                            style={buttonStyle()}
+                            onClick={handleResetRcCalibrationCapture}
+                            disabled={rcCalibrationSession.status === 'idle'}
+                          >
+                            Reset
+                          </button>
+                          <button
+                            style={buttonStyle('secondary')}
+                            onClick={handleStageRcCalibrationDrafts}
+                            disabled={rcCalibrationSession.status !== 'ready'}
+                          >
+                            Stage Captured Values
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {activeReceiverTaskId === 'flight-modes' ? (
+                  <div className="receiver-task-panel receiver-task-panel--stack">
+                    <div className="receiver-task-two-up">
+                      <div className="mode-estimate-card">
+                        <div className="mode-estimate-card__header">
+                          <strong>Flight mode switch</strong>
+                          <StatusBadge tone={recentModeSwitchChange ? 'warning' : modeSwitchEstimate.estimatedSlot !== undefined ? 'success' : 'neutral'}>
+                            {recentModeSwitchChange ? 'Switch moved' : modeSwitchEstimate.estimatedSlot !== undefined ? 'Stable' : 'Waiting'}
+                          </StatusBadge>
+                        </div>
+                        <p>
+                          {modeSwitchEstimate.channelNumber === undefined
+                            ? 'Mode channel is not configured yet.'
+                            : modeSwitchEstimate.pwm === undefined
+                              ? `Configured for CH${modeSwitchEstimate.channelNumber}, waiting for that channel to stream.`
+                              : `Estimated slot ${modeSwitchEstimate.estimatedSlot} on CH${modeSwitchEstimate.channelNumber} at ${modeSwitchEstimate.pwm} us.`}
+                        </p>
                         <small>
-                          Repeated strong movement on the same channel will auto-capture it and advance to the next axis.
+                          {modeSwitchEstimate.configuredParamId && modeSwitchEstimate.configuredValue !== undefined
+                            ? `${modeSwitchEstimate.configuredParamId} = ${formatModeAssignment(modeSwitchEstimate.configuredValue)}`
+                            : `Heartbeat mode: ${snapshot.vehicle?.flightMode ?? 'Unknown'}`}
                         </small>
-                      </div>
-                      <div className="rc-mapping-auto-capture__meter" aria-hidden="true">
-                        <span
-                          className="rc-mapping-auto-capture__fill"
-                          style={{ width: `${rcMappingAutoCaptureProgressPercent}%` }}
-                        />
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-
-              <ol className="switch-exercise-instructions">
-                {rcMappingInstructions.map((instruction) => (
-                  <li key={instruction}>{instruction}</li>
-                ))}
-              </ol>
-
-              <div className="switch-exercise-controls">
-                <button
-                  style={buttonStyle('primary')}
-                  onClick={handleStartRcMappingExercise}
-                  disabled={!canRunRcMappingExercise || rcMappingSession.status === 'running'}
-                >
-                  {rcMappingSession.status === 'ready' ? 'Run Guided Mapping Again' : 'Begin Guided Mapping'}
-                </button>
-                <button
-                  style={buttonStyle('secondary')}
-                  onClick={handleConfirmRcMappingCandidate}
-                  disabled={rcMappingSession.status !== 'running' || rcMappingCandidate === undefined}
-                >
-                  {rcMappingCandidate && rcMappingSession.currentTargetAxis
-                    ? `Capture CH${rcMappingCandidate.channelNumber} for ${formatRcAxisLabel(rcMappingSession.currentTargetAxis)}`
-                    : 'Capture Current Channel'}
-                </button>
-                <button
-                  style={buttonStyle('secondary')}
-                  onClick={handleStageRcMappingDrafts}
-                  disabled={rcMappingSession.status !== 'ready' || rcMappingStagedChangeCount === 0}
-                >
-                  {rcMappingSession.status === 'ready' && rcMappingStagedChangeCount === 0
-                    ? 'No RCMAP Changes Needed'
-                    : `Stage Detected Mapping (${rcMappingStagedChangeCount})`}
-                </button>
-                <button
-                  style={buttonStyle()}
-                  onClick={handleResetRcMappingExercise}
-                  disabled={rcMappingSession.status === 'idle'}
-                >
-                  Start Over
-                </button>
-                <button
-                  style={buttonStyle('secondary')}
-                  onClick={handleFailRcMappingExercise}
-                  disabled={rcMappingSession.status !== 'running'}
-                >
-                  Can’t Isolate Axis
-                </button>
-              </div>
-                </div>
-
-	            <div className="rc-calibration-card">
-              <div className="switch-exercise-card__header">
-                <div>
-                  <strong>RC calibration capture</strong>
-                  <p>{rcCalibrationSummary}</p>
-                </div>
-                <StatusBadge tone={toneForModeSwitchExercise(rcCalibrationSession.status === 'ready' ? 'passed' : rcCalibrationSession.status === 'capturing' ? 'running' : rcCalibrationSession.status === 'failed' ? 'failed' : 'idle')}>
-                  {rcCalibrationSession.status}
-                </StatusBadge>
-              </div>
-
-              <div className="config-pills">
-                {rcAxisObservations.map((axis) => (
-                  <span key={axis.axisId}>
-                    {axis.label}: CH{axis.channelNumber}
-                  </span>
-                ))}
-              </div>
-
-              <div className="rc-range-axis-grid">
-                {RC_CALIBRATION_AXIS_ORDER.map((axisId) => {
-                  const capture = rcCalibrationSession.captures[axisId]
-                  return (
-                    <article
-                      key={axisId}
-                      className={`rc-range-axis-card${rcCalibrationCaptureComplete(capture) ? ' rc-range-axis-card--complete' : ''}`}
-                    >
-                      <div className="rc-range-axis-card__header">
-                        <strong>{capture.label}</strong>
-                        <span>CH{capture.channelNumber}</span>
-                      </div>
-                      <p>
-                        Min {capture.observedMin !== undefined ? Math.round(capture.observedMin) : 'Unknown'} us · Max{' '}
-                        {capture.observedMax !== undefined ? Math.round(capture.observedMax) : 'Unknown'} us
-                      </p>
-                      <div className="config-pills">
-                        <span className={capture.lowObserved ? 'is-complete' : undefined}>Low</span>
-                        <span className={capture.highObserved ? 'is-complete' : undefined}>High</span>
-                        {axisId !== 'throttle' ? (
-                          <span className={capture.centeredObserved ? 'is-complete' : undefined}>
-                            Trim {capture.trimPwm !== undefined ? Math.round(capture.trimPwm) : 'pending'}
-                          </span>
+                        {modeSwitchActivity ? (
+                          <small>
+                            {modeSwitchActivity.previousSlot !== undefined && modeSwitchActivity.previousSlot !== modeSwitchActivity.currentSlot
+                              ? `Last slot change: ${formatModeAssignment(readRoundedParameter(snapshot, `FLTMODE${modeSwitchActivity.previousSlot}`))} -> ${formatModeAssignment(
+                                  readRoundedParameter(snapshot, `FLTMODE${modeSwitchActivity.currentSlot}`)
+                                )}`
+                              : `Last switch movement: ${modeSwitchActivity.previousPwm ?? modeSwitchActivity.currentPwm} us -> ${modeSwitchActivity.currentPwm} us`}
+                          </small>
                         ) : null}
                       </div>
-                    </article>
-                  )
-                })}
-              </div>
 
-              <ol className="switch-exercise-instructions">
-	                <li>Start capture with the sticks centered and throttle low.</li>
-	                <li>Move roll, pitch, throttle, and yaw through their full travel.</li>
-	                <li>Stage the captured values, then review and apply them from the Receiver view before confirming the radio step.</li>
-	              </ol>
+                      {modeChannelParameter ? (
+                        <div className="scoped-review-card scoped-review-card--compact">
+                          <div className="switch-exercise-card__header">
+                            <div>
+                              <strong>Mode channel</strong>
+                              <p>Choose which receiver channel ArduPilot should use for flight-mode selection.</p>
+                            </div>
+                            <StatusBadge tone={toneForScopedDraftReview(receiverStagedDrafts.length, receiverInvalidDrafts.length)}>
+                              {parameterDraftById.get(modeChannelParameter.id)?.status ?? 'unchanged'}
+                            </StatusBadge>
+                          </div>
 
-              <div className="switch-exercise-controls">
-                <button
-                  style={buttonStyle('primary')}
-                  onClick={handleStartRcCalibrationCapture}
-                  disabled={!canCaptureRcCalibration || rcCalibrationSession.status === 'capturing'}
-                >
-                  {rcCalibrationSession.status === 'ready' ? 'Capture Again' : 'Start Capture'}
-                </button>
-                <button
-                  style={buttonStyle()}
-                  onClick={handleResetRcCalibrationCapture}
-                  disabled={rcCalibrationSession.status === 'idle'}
-                >
-                  Reset
-                </button>
-                <button
-                  style={buttonStyle('secondary')}
-                  onClick={handleStageRcCalibrationDrafts}
-                  disabled={rcCalibrationSession.status !== 'ready'}
-                >
-                  Stage Captured Values
-	                </button>
-	              </div>
-	            </div>
-                </div>
+                          <div className="config-pills">
+                            <span>Current: {formatArducopterFlightModeChannel(configuredModeChannel)}</span>
+                            {receiverLinkPorts.length > 0
+                              ? receiverLinkPorts.map((port) => <span key={`receiver-link:${port.portNumber}`}>{port.label}: {port.protocolLabel}</span>)
+                              : <span>Receiver link assigned from Ports</span>}
+                          </div>
 
-                <div className="receiver-support-grid">
-              {modeChannelParameter || rssiTypeParameter || rssiChannelParameter || rssiChannelLowParameter || rssiChannelHighParameter ? (
-                <div className="scoped-review-card scoped-review-card--compact">
-                  <div className="switch-exercise-card__header">
-                    <div>
-                      <strong>Receiver link & signal setup</strong>
-                      <p>Mode-channel selection, RSSI configuration, and receiver-link awareness stay local to this Receiver workflow.</p>
+                          <label className={`scoped-editor-field scoped-editor-field--${parameterDraftById.get(modeChannelParameter.id)?.status ?? 'unchanged'}`}>
+                            <span>{modeChannelParameter.definition?.label ?? modeChannelParameter.id}</span>
+                            <select
+                              value={editedValues[modeChannelParameter.id] ?? String(configuredModeChannel ?? '')}
+                              onChange={(event) =>
+                                setEditedValues((existing) => ({
+                                  ...existing,
+                                  [modeChannelParameter.id]: event.target.value
+                                }))
+                              }
+                            >
+                              {(modeChannelParameter.definition?.options ?? []).map((valueOption) => (
+                                <option key={`${modeChannelParameter.id}:${valueOption.value}`} value={String(valueOption.value)}>
+                                  {valueOption.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+                      ) : null}
                     </div>
-                    <StatusBadge tone={toneForScopedDraftReview(receiverStagedDrafts.length, receiverInvalidDrafts.length)}>
-                      {receiverInvalidDrafts.length > 0
-                        ? `${receiverInvalidDrafts.length} invalid`
-                        : receiverStagedDrafts.length > 0
-                          ? `${receiverStagedDrafts.length} staged`
-                          : 'in sync'}
-                    </StatusBadge>
-                  </div>
 
-                  <div className="config-pills">
-                    <span>Mode channel: {formatArducopterFlightModeChannel(configuredModeChannel)}</span>
-                    <span>RSSI source: {formatArducopterRssiType(rssiType)}</span>
-                    <span>Live RSSI: {snapshot.liveVerification.rcInput.rssi ?? 'Unknown'}</span>
-                    {receiverLinkPorts.length > 0
-                      ? receiverLinkPorts.map((port) => <span key={`receiver-link:${port.portNumber}`}>{port.label}: {port.protocolLabel}</span>)
-                      : <span>No receiver serial link detected in current port roles</span>}
-                  </div>
+                    {modeAssignmentParameters.length > 0 ? (
+                      <div className="scoped-review-card scoped-review-card--compact">
+                        <div className="switch-exercise-card__header">
+                          <div>
+                            <strong>Flight mode assignments</strong>
+                            <p>Edit the configured switch positions here, then apply them from the same Receiver workflow.</p>
+                          </div>
+                          <StatusBadge tone={modeExerciseAssignments.length >= 2 ? 'success' : 'warning'}>
+                            {modeExerciseAssignments.length >= 2 ? `${modeExerciseAssignments.length} distinct positions` : 'Review needed'}
+                          </StatusBadge>
+                        </div>
 
-                  <div className="scoped-editor-grid">
-                    {modeChannelParameter ? (
-                      <label className={`scoped-editor-field scoped-editor-field--${parameterDraftById.get(modeChannelParameter.id)?.status ?? 'unchanged'}`}>
-                        <span>{modeChannelParameter.definition?.label ?? modeChannelParameter.id}</span>
-                        <select
-                          value={editedValues[modeChannelParameter.id] ?? String(configuredModeChannel ?? '')}
-                          onChange={(event) =>
-                            setEditedValues((existing) => ({
-                              ...existing,
-                              [modeChannelParameter.id]: event.target.value
-                            }))
+                        <div className="scoped-editor-grid">
+                          {modeAssignmentParameters.map((parameter) => {
+                            const draft = parameterDraftById.get(parameter.id)
+                            const inputValue = editedValues[parameter.id] ?? String(parameter.value)
+
+                            return (
+                              <label key={parameter.id} className={`scoped-editor-field scoped-editor-field--${draft?.status ?? 'unchanged'}`}>
+                                <span>{parameter.definition?.label ?? parameter.id}</span>
+                                <select
+                                  value={inputValue}
+                                  onChange={(event) =>
+                                    setEditedValues((existing) => ({
+                                      ...existing,
+                                      [parameter.id]: event.target.value
+                                    }))
+                                  }
+                                >
+                                  {(parameter.definition?.options ?? []).map((valueOption) => (
+                                    <option key={`${parameter.id}:${valueOption.value}`} value={String(valueOption.value)}>
+                                      {valueOption.label} ({valueOption.value})
+                                    </option>
+                                  ))}
+                                </select>
+                                <small>
+                                  {draft?.status === 'staged'
+                                    ? `Staged ${formatParameterDisplayValue(parameter, draft.nextValue)}`
+                                    : draft?.reason ?? `Current ${formatParameterDisplayValue(parameter, parameter.value)}`}
+                                </small>
+                              </label>
+                            )
+                          })}
+                        </div>
+
+                        <div className="config-pills">
+                          {modeAssignments.map((assignment) => (
+                            <span
+                              key={assignment.slot}
+                              className={assignment.slot === modeSwitchEstimate.estimatedSlot ? 'is-active' : undefined}
+                            >
+                              FLTMODE{assignment.slot} = {formatModeAssignment(assignment.value)}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div className="switch-exercise-card">
+                      <div className="switch-exercise-card__header">
+                        <div>
+                          <strong>Switch exercise</strong>
+                          <p>{modeSwitchExerciseSummary}</p>
+                        </div>
+                        <StatusBadge tone={toneForModeSwitchExercise(modeSwitchExercise.status)}>{modeSwitchExercise.status}</StatusBadge>
+                      </div>
+
+                      <div className="switch-exercise-progress" aria-hidden="true">
+                        <div className="switch-exercise-progress__fill" style={{ width: `${modeSwitchExerciseProgress}%` }} />
+                      </div>
+
+                      <div className="config-pills">
+                        {(modeSwitchExercise.status === 'idle' ? modeExerciseAssignments.map((assignment) => assignment.slot) : modeSwitchExercise.targetSlots).map((slot) => {
+                          const visited = modeSwitchExercise.visitedSlots.includes(slot)
+                          const isTarget = modeSwitchExercise.status === 'running' && modeSwitchExercise.currentTargetSlot === slot
+                          const classes = [visited ? 'is-complete' : undefined, isTarget ? 'is-target' : undefined]
+                            .filter((value): value is string => value !== undefined)
+                            .join(' ')
+
+                          return (
+                            <span key={slot} className={classes || undefined}>
+                              {formatModeSlotLabel(snapshot, slot)}
+                            </span>
+                          )
+                        })}
+                      </div>
+
+                      {modeSwitchExercise.unexpectedSlots.length > 0 ? (
+                        <p className="switch-exercise-warning">
+                          Observed unconfigured positions: {modeSwitchExercise.unexpectedSlots.map((slot) => `slot ${slot}`).join(', ')}
+                        </p>
+                      ) : null}
+
+                      <ol className="switch-exercise-instructions">
+                        {modeSwitchExerciseInstructions.map((instruction) => (
+                          <li key={instruction}>{instruction}</li>
+                        ))}
+                      </ol>
+
+                      <div className="switch-exercise-controls">
+                        <button
+                          style={buttonStyle('primary')}
+                          onClick={handleStartModeSwitchExercise}
+                          disabled={!canRunModeSwitchExercise || modeSwitchExercise.status === 'running'}
+                        >
+                          {modeSwitchExercise.status === 'passed' ? 'Run Again' : 'Start Exercise'}
+                        </button>
+                        <button
+                          style={buttonStyle()}
+                          onClick={handleResetModeSwitchExercise}
+                          disabled={modeSwitchExercise.status === 'idle'}
+                        >
+                          Reset
+                        </button>
+                        <button
+                          style={buttonStyle('secondary')}
+                          onClick={handleFailModeSwitchExercise}
+                          disabled={modeSwitchExercise.status !== 'running'}
+                        >
+                          Mark Failed
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {activeReceiverTaskId === 'advanced' ? (
+                  <div className="receiver-task-panel receiver-task-panel--stack">
+                    {rssiTypeParameter || rssiChannelParameter || rssiChannelLowParameter || rssiChannelHighParameter ? (
+                      <div className="scoped-review-card scoped-review-card--compact">
+                        <div className="switch-exercise-card__header">
+                          <div>
+                            <strong>Receiver signal setup</strong>
+                            <p>RSSI configuration and receiver-link interpretation stay available here without crowding the main setup path.</p>
+                          </div>
+                          <StatusBadge tone={toneForScopedDraftReview(receiverStagedDrafts.length, receiverInvalidDrafts.length)}>
+                            {receiverInvalidDrafts.length > 0
+                              ? `${receiverInvalidDrafts.length} invalid`
+                              : receiverStagedDrafts.length > 0
+                                ? `${receiverStagedDrafts.length} staged`
+                                : 'in sync'}
+                          </StatusBadge>
+                        </div>
+
+                        <div className="config-pills">
+                          <span>RSSI source: {formatArducopterRssiType(rssiType)}</span>
+                          <span>Live RSSI: {snapshot.liveVerification.rcInput.rssi ?? 'Unknown'}</span>
+                          {receiverLinkPorts.length > 0
+                            ? receiverLinkPorts.map((port) => <span key={`receiver-link:${port.portNumber}`}>{port.label}: {port.protocolLabel}</span>)
+                            : <span>No receiver serial link detected in current port roles</span>}
+                        </div>
+
+                        <div className="scoped-editor-grid">
+                          {rssiTypeParameter ? (
+                            <label className={`scoped-editor-field scoped-editor-field--${parameterDraftById.get(rssiTypeParameter.id)?.status ?? 'unchanged'}`}>
+                              <span>{rssiTypeParameter.definition?.label ?? rssiTypeParameter.id}</span>
+                              <select
+                                value={editedValues[rssiTypeParameter.id] ?? String(rssiType ?? '')}
+                                onChange={(event) =>
+                                  setEditedValues((existing) => ({
+                                    ...existing,
+                                    [rssiTypeParameter.id]: event.target.value
+                                  }))
+                                }
+                              >
+                                {(rssiTypeParameter.definition?.options ?? []).map((valueOption) => (
+                                  <option key={`${rssiTypeParameter.id}:${valueOption.value}`} value={String(valueOption.value)}>
+                                    {valueOption.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          ) : null}
+
+                          {rssiChannelParameter ? (
+                            <label className={`scoped-editor-field scoped-editor-field--${parameterDraftById.get(rssiChannelParameter.id)?.status ?? 'unchanged'}`}>
+                              <span>{rssiChannelParameter.definition?.label ?? rssiChannelParameter.id}</span>
+                              <input
+                                type="number"
+                                min={rssiChannelParameter.definition?.minimum}
+                                max={rssiChannelParameter.definition?.maximum}
+                                step={rssiChannelParameter.definition?.step ?? 1}
+                                value={editedValues[rssiChannelParameter.id] ?? String(rssiChannel ?? '')}
+                                onChange={(event) =>
+                                  setEditedValues((existing) => ({
+                                    ...existing,
+                                    [rssiChannelParameter.id]: event.target.value
+                                  }))
+                                }
+                              />
+                            </label>
+                          ) : null}
+
+                          {rssiChannelLowParameter ? (
+                            <label className={`scoped-editor-field scoped-editor-field--${parameterDraftById.get(rssiChannelLowParameter.id)?.status ?? 'unchanged'}`}>
+                              <span>{rssiChannelLowParameter.definition?.label ?? rssiChannelLowParameter.id}</span>
+                              <input
+                                type="number"
+                                min={rssiChannelLowParameter.definition?.minimum}
+                                max={rssiChannelLowParameter.definition?.maximum}
+                                step={rssiChannelLowParameter.definition?.step ?? 1}
+                                value={editedValues[rssiChannelLowParameter.id] ?? String(rssiChannelLow ?? '')}
+                                onChange={(event) =>
+                                  setEditedValues((existing) => ({
+                                    ...existing,
+                                    [rssiChannelLowParameter.id]: event.target.value
+                                  }))
+                                }
+                              />
+                            </label>
+                          ) : null}
+
+                          {rssiChannelHighParameter ? (
+                            <label className={`scoped-editor-field scoped-editor-field--${parameterDraftById.get(rssiChannelHighParameter.id)?.status ?? 'unchanged'}`}>
+                              <span>{rssiChannelHighParameter.definition?.label ?? rssiChannelHighParameter.id}</span>
+                              <input
+                                type="number"
+                                min={rssiChannelHighParameter.definition?.minimum}
+                                max={rssiChannelHighParameter.definition?.maximum}
+                                step={rssiChannelHighParameter.definition?.step ?? 1}
+                                value={editedValues[rssiChannelHighParameter.id] ?? String(rssiChannelHigh ?? '')}
+                                onChange={(event) =>
+                                  setEditedValues((existing) => ({
+                                    ...existing,
+                                    [rssiChannelHighParameter.id]: event.target.value
+                                  }))
+                                }
+                              />
+                            </label>
+                          ) : null}
+                        </div>
+
+                        <ul className="output-note-list">
+                          <li>Receiver serial protocol is usually assigned from Ports; this card covers the receiver-side interpretation of that link.</li>
+                          <li>After changing RSSI settings, rerun the RC verification flow before flight.</li>
+                        </ul>
+                      </div>
+                    ) : null}
+
+                    {renderAdditionalSettingsCard(
+                      'Additional receiver settings',
+                      'These metadata-backed receiver and mode settings remain available here without forcing you into raw Parameters.',
+                      receiverAdditionalGroups,
+                      receiverAdditionalDraftEntries,
+                      receiverAdditionalStagedDrafts,
+                      receiverAdditionalInvalidDrafts,
+                      'receiver:additional',
+                      'Apply Additional Receiver Changes',
+                      'additional receiver settings'
+                    )}
+                  </div>
+                ) : null}
+
+                {activeReceiverTaskId === 'review' ? (
+                  <div className="receiver-task-panel receiver-task-panel--stack">
+                    <div className="scoped-review-card">
+                      <div className="switch-exercise-card__header">
+                        <div>
+                          <strong>Receiver & mode changes in review</strong>
+                          <p>
+                            Keep RC mapping, calibration, and flight-mode work local to this view. Apply verified changes here instead of
+                            jumping to Parameters.
+                          </p>
+                        </div>
+                        <StatusBadge tone={toneForScopedDraftReview(receiverStagedDrafts.length, receiverInvalidDrafts.length)}>
+                          {receiverInvalidDrafts.length > 0
+                            ? `${receiverInvalidDrafts.length} invalid`
+                            : receiverStagedDrafts.length > 0
+                              ? `${receiverStagedDrafts.length} staged`
+                              : 'in sync'}
+                        </StatusBadge>
+                      </div>
+
+                      {receiverDraftEntries.length > 0 ? (
+                        <div className="scoped-draft-list">
+                          {receiverDraftEntries.map((draft) => (
+                            <article key={draft.id} className={`scoped-draft-item scoped-draft-item--${draft.status}`}>
+                              <div className="scoped-draft-item__header">
+                                <strong>{draft.id}</strong>
+                                <StatusBadge tone={toneForParameterDraftStatus(draft.status)}>{draft.status}</StatusBadge>
+                              </div>
+                              <p>{draft.label}</p>
+                              <small>
+                                {draft.status === 'staged'
+                                  ? `${formatParameterValue(draft.currentValue, draft.definition?.unit)} to ${formatParameterValue(
+                                      draft.nextValue,
+                                      draft.definition?.unit
+                                    )}`
+                                  : draft.reason ?? 'Draft matches the live controller value.'}
+                              </small>
+                            </article>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="success-copy">No receiver-specific parameter changes are currently staged.</p>
+                      )}
+
+                      <div className="switch-exercise-controls">
+                        <button
+                          style={buttonStyle('primary')}
+                          onClick={() =>
+                            void handleApplyScopedParameterDrafts(receiverDraftEntries, 'receiver:apply', 'Receiver setup')
+                          }
+                          disabled={
+                            busyAction !== undefined ||
+                            receiverStagedDrafts.length === 0 ||
+                            receiverInvalidDrafts.length > 0 ||
+                            !canApplyDraftParameters
                           }
                         >
-                          {(modeChannelParameter.definition?.options ?? []).map((valueOption) => (
-                            <option key={`${modeChannelParameter.id}:${valueOption.value}`} value={String(valueOption.value)}>
-                              {valueOption.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    ) : null}
-
-                    {rssiTypeParameter ? (
-                      <label className={`scoped-editor-field scoped-editor-field--${parameterDraftById.get(rssiTypeParameter.id)?.status ?? 'unchanged'}`}>
-                        <span>{rssiTypeParameter.definition?.label ?? rssiTypeParameter.id}</span>
-                        <select
-                          value={editedValues[rssiTypeParameter.id] ?? String(rssiType ?? '')}
-                          onChange={(event) =>
-                            setEditedValues((existing) => ({
-                              ...existing,
-                              [rssiTypeParameter.id]: event.target.value
-                            }))
+                          {busyAction === 'receiver:apply' ? 'Applying…' : `Apply Receiver Changes (${receiverStagedDrafts.length})`}
+                        </button>
+                        <button
+                          style={buttonStyle()}
+                          onClick={() =>
+                            handleDiscardScopedParameterDrafts(receiverDraftEntries.map((entry) => entry.id), 'receiver')
                           }
+                          disabled={busyAction !== undefined || receiverDraftEntries.length === 0}
                         >
-                          {(rssiTypeParameter.definition?.options ?? []).map((valueOption) => (
-                            <option key={`${rssiTypeParameter.id}:${valueOption.value}`} value={String(valueOption.value)}>
-                              {valueOption.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    ) : null}
+                          Discard Receiver Changes
+                        </button>
+                      </div>
+                    </div>
 
-                    {rssiChannelParameter ? (
-                      <label className={`scoped-editor-field scoped-editor-field--${parameterDraftById.get(rssiChannelParameter.id)?.status ?? 'unchanged'}`}>
-                        <span>{rssiChannelParameter.definition?.label ?? rssiChannelParameter.id}</span>
-                        <input
-                          type="number"
-                          min={rssiChannelParameter.definition?.minimum}
-                          max={rssiChannelParameter.definition?.maximum}
-                          step={rssiChannelParameter.definition?.step ?? 1}
-                          value={editedValues[rssiChannelParameter.id] ?? String(rssiChannel ?? '')}
-                          onChange={(event) =>
-                            setEditedValues((existing) => ({
-                              ...existing,
-                              [rssiChannelParameter.id]: event.target.value
-                            }))
-                          }
-                        />
-                      </label>
-                    ) : null}
-
-                    {rssiChannelLowParameter ? (
-                      <label className={`scoped-editor-field scoped-editor-field--${parameterDraftById.get(rssiChannelLowParameter.id)?.status ?? 'unchanged'}`}>
-                        <span>{rssiChannelLowParameter.definition?.label ?? rssiChannelLowParameter.id}</span>
-                        <input
-                          type="number"
-                          min={rssiChannelLowParameter.definition?.minimum}
-                          max={rssiChannelLowParameter.definition?.maximum}
-                          step={rssiChannelLowParameter.definition?.step ?? 1}
-                          value={editedValues[rssiChannelLowParameter.id] ?? String(rssiChannelLow ?? '')}
-                          onChange={(event) =>
-                            setEditedValues((existing) => ({
-                              ...existing,
-                              [rssiChannelLowParameter.id]: event.target.value
-                            }))
-                          }
-                        />
-                      </label>
-                    ) : null}
-
-                    {rssiChannelHighParameter ? (
-                      <label className={`scoped-editor-field scoped-editor-field--${parameterDraftById.get(rssiChannelHighParameter.id)?.status ?? 'unchanged'}`}>
-                        <span>{rssiChannelHighParameter.definition?.label ?? rssiChannelHighParameter.id}</span>
-                        <input
-                          type="number"
-                          min={rssiChannelHighParameter.definition?.minimum}
-                          max={rssiChannelHighParameter.definition?.maximum}
-                          step={rssiChannelHighParameter.definition?.step ?? 1}
-                          value={editedValues[rssiChannelHighParameter.id] ?? String(rssiChannelHigh ?? '')}
-                          onChange={(event) =>
-                            setEditedValues((existing) => ({
-                              ...existing,
-                              [rssiChannelHighParameter.id]: event.target.value
-                            }))
-                          }
-                        />
-                      </label>
+                    {(receiverAdvancedDraftCount > 0 || receiverAdvancedInvalidCount > 0) ? (
+                      <div className="receiver-inline-toggle receiver-inline-toggle--review">
+                        <div>
+                          <strong>Advanced receiver settings also changed</strong>
+                          <p>
+                            {receiverAdvancedInvalidCount > 0
+                              ? `${receiverAdvancedInvalidCount} advanced setting${receiverAdvancedInvalidCount === 1 ? '' : 's'} still need attention.`
+                              : `${receiverAdvancedDraftCount} advanced receiver change${receiverAdvancedDraftCount === 1 ? '' : 's'} are staged in Signal Setup.`}
+                          </p>
+                        </div>
+                        <button
+                          style={buttonStyle()}
+                          onClick={() => setReceiverTaskOverride('advanced')}
+                        >
+                          Open Signal Setup
+                        </button>
+                      </div>
                     ) : null}
                   </div>
-
-                  <ul className="output-note-list">
-                    <li>Receiver serial protocol is usually assigned from Ports; this card covers the receiver-side interpretation of that link.</li>
-                    <li>After changing the mode channel or RSSI settings, rerun the mode-switch and RC verification exercises before flight.</li>
-                  </ul>
-                </div>
-              ) : null}
-
-	            <div className="scoped-review-card">
-	              <div className="switch-exercise-card__header">
-	                <div>
-	                  <strong>Receiver & mode changes in review</strong>
-	                  <p>
-	                    Keep RC mapping, calibration, and flight-mode work local to this view. Apply verified changes here instead of
-	                    jumping to Parameters.
-	                  </p>
-	                </div>
-	                <StatusBadge tone={toneForScopedDraftReview(receiverStagedDrafts.length, receiverInvalidDrafts.length)}>
-	                  {receiverInvalidDrafts.length > 0
-	                    ? `${receiverInvalidDrafts.length} invalid`
-	                    : receiverStagedDrafts.length > 0
-	                      ? `${receiverStagedDrafts.length} staged`
-	                      : 'in sync'}
-	                </StatusBadge>
-	              </div>
-
-	              {receiverDraftEntries.length > 0 ? (
-	                <div className="scoped-draft-list">
-	                  {receiverDraftEntries.map((draft) => (
-	                    <article key={draft.id} className={`scoped-draft-item scoped-draft-item--${draft.status}`}>
-	                      <div className="scoped-draft-item__header">
-	                        <strong>{draft.id}</strong>
-	                        <StatusBadge tone={toneForParameterDraftStatus(draft.status)}>{draft.status}</StatusBadge>
-	                      </div>
-	                      <p>{draft.label}</p>
-	                      <small>
-	                        {draft.status === 'staged'
-	                          ? `${formatParameterValue(draft.currentValue, draft.definition?.unit)} to ${formatParameterValue(
-	                              draft.nextValue,
-	                              draft.definition?.unit
-	                            )}`
-	                          : draft.reason ?? 'Draft matches the live controller value.'}
-	                      </small>
-	                    </article>
-	                  ))}
-	                </div>
-	              ) : (
-	                <p className="success-copy">No receiver-specific parameter changes are currently staged.</p>
-	              )}
-
-	              <div className="switch-exercise-controls">
-	                <button
-	                  style={buttonStyle('primary')}
-	                  onClick={() =>
-	                    void handleApplyScopedParameterDrafts(receiverDraftEntries, 'receiver:apply', 'Receiver setup')
-	                  }
-	                  disabled={
-	                    busyAction !== undefined ||
-	                    receiverStagedDrafts.length === 0 ||
-	                    receiverInvalidDrafts.length > 0 ||
-	                    !canApplyDraftParameters
-	                  }
-	                >
-	                  {busyAction === 'receiver:apply' ? 'Applying…' : `Apply Receiver Changes (${receiverStagedDrafts.length})`}
-	                </button>
-	                <button
-	                  style={buttonStyle()}
-	                  onClick={() =>
-	                    handleDiscardScopedParameterDrafts(receiverDraftEntries.map((entry) => entry.id), 'receiver')
-	                  }
-	                  disabled={busyAction !== undefined || receiverDraftEntries.length === 0}
-	                >
-	                  Discard Receiver Changes
-	                </button>
-	              </div>
-	            </div>
-
-	            {modeAssignmentParameters.length > 0 ? (
-	              <div className="scoped-review-card scoped-review-card--compact">
-	                <div className="switch-exercise-card__header">
-	                  <div>
-	                    <strong>Flight mode assignments</strong>
-	                    <p>Edit the configured switch positions here, then apply them from the same Receiver workflow.</p>
-	                  </div>
-	                  <StatusBadge tone={modeExerciseAssignments.length >= 2 ? 'success' : 'warning'}>
-	                    {modeExerciseAssignments.length >= 2 ? `${modeExerciseAssignments.length} distinct positions` : 'Review needed'}
-	                  </StatusBadge>
-	                </div>
-
-	                <div className="scoped-editor-grid">
-	                  {modeAssignmentParameters.map((parameter) => {
-	                    const draft = parameterDraftById.get(parameter.id)
-	                    const inputValue = editedValues[parameter.id] ?? String(parameter.value)
-
-	                    return (
-	                      <label key={parameter.id} className={`scoped-editor-field scoped-editor-field--${draft?.status ?? 'unchanged'}`}>
-	                        <span>{parameter.definition?.label ?? parameter.id}</span>
-	                        <select
-	                          value={inputValue}
-	                          onChange={(event) =>
-	                            setEditedValues((existing) => ({
-	                              ...existing,
-	                              [parameter.id]: event.target.value
-	                            }))
-	                          }
-	                        >
-	                          {(parameter.definition?.options ?? []).map((valueOption) => (
-	                            <option key={`${parameter.id}:${valueOption.value}`} value={String(valueOption.value)}>
-	                              {valueOption.label} ({valueOption.value})
-	                            </option>
-	                          ))}
-	                        </select>
-	                        <small>
-	                          {draft?.status === 'staged'
-	                            ? `Staged ${formatParameterDisplayValue(parameter, draft.nextValue)}`
-	                            : draft?.reason ?? `Current ${formatParameterDisplayValue(parameter, parameter.value)}`}
-	                        </small>
-	                      </label>
-	                    )
-	                  })}
-	                </div>
-
-	                <div className="config-pills">
-	                  {modeAssignments.map((assignment) => (
-	                    <span
-	                      key={assignment.slot}
-	                      className={assignment.slot === modeSwitchEstimate.estimatedSlot ? 'is-active' : undefined}
-	                    >
-	                      FLTMODE{assignment.slot} = {formatModeAssignment(assignment.value)}
-	                    </span>
-	                  ))}
-	                </div>
-	              </div>
-	            ) : null}
-                </div>
-
-              {renderAdditionalSettingsCard(
-                'Additional receiver settings',
-                'These metadata-backed receiver and mode settings extend the Receiver workflow without forcing you into raw Parameters.',
-                receiverAdditionalGroups,
-                receiverAdditionalDraftEntries,
-                receiverAdditionalStagedDrafts,
-                receiverAdditionalInvalidDrafts,
-                'receiver:additional',
-                'Apply Additional Receiver Changes',
-                'additional receiver settings'
-              )}
+                ) : null}
               </div>
             </div>
+
+            {receiverHasPendingReview ? (
+              <div className="receiver-review-dock">
+                <div className="receiver-review-dock__summary">
+                  <strong>Receiver changes pending</strong>
+                  <div className="config-pills">
+                    {receiverWorkflowDraftCount > 0 ? <span>{receiverWorkflowDraftCount} workflow staged</span> : null}
+                    {receiverWorkflowInvalidCount > 0 ? <span className="is-pending">{receiverWorkflowInvalidCount} workflow invalid</span> : null}
+                    {receiverAdvancedDraftCount > 0 ? <span>{receiverAdvancedDraftCount} advanced staged</span> : null}
+                    {receiverAdvancedInvalidCount > 0 ? <span className="is-pending">{receiverAdvancedInvalidCount} advanced invalid</span> : null}
+                  </div>
+                </div>
+
+                <div className="receiver-review-dock__actions">
+                  <button
+                    style={buttonStyle()}
+                    onClick={() => setReceiverTaskOverride('review')}
+                  >
+                    Open Review
+                  </button>
+                  {(receiverAdvancedDraftCount > 0 || receiverAdvancedInvalidCount > 0) ? (
+                    <button
+                      style={buttonStyle()}
+                      onClick={() => setReceiverTaskOverride('advanced')}
+                    >
+                      Open Signal Setup
+                    </button>
+                  ) : null}
+                  <button
+                    style={buttonStyle('primary')}
+                    onClick={() =>
+                      void handleApplyScopedParameterDrafts(receiverDraftEntries, 'receiver:apply', 'Receiver setup')
+                    }
+                    disabled={
+                      busyAction !== undefined ||
+                      receiverStagedDrafts.length === 0 ||
+                      receiverInvalidDrafts.length > 0 ||
+                      !canApplyDraftParameters
+                    }
+                  >
+                    {busyAction === 'receiver:apply' ? 'Applying…' : `Apply Receiver Changes (${receiverStagedDrafts.length})`}
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
           </Panel>
         </div>
